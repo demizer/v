@@ -1,0 +1,5 @@
+['OK']
+set_pos()
+button { state.modal1_open = true checkpoint: cp1 }
+
+[1.0, 0.0, 0.0, 1.0]

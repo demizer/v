@@ -8,6 +8,12 @@ import v.util
 
 fn (mut g Gen) need_tmp_var_in_match(node ast.MatchExpr) bool {
 	if node.is_expr && node.return_type != ast.void_type && node.return_type != 0 {
+		// When generating debug info (-g flag) or coverage (-coverage), force if/else
+		// chain instead of ternary so that #line directives and coverage points can be
+		// emitted for each match arm.
+		if g.pref.is_vlines || g.pref.is_coverage {
+			return true
+		}
 		if g.inside_struct_init {
 			return true
 		}
@@ -96,7 +102,19 @@ fn (mut g Gen) match_expr(node ast.MatchExpr) {
 	}
 	if need_tmp_var {
 		g.empty_line = true
-		cur_line = g.go_before_last_stmt().trim_left(' \t')
+		// When inside an if-guard body with -g or -coverage, don't hoist the match code
+		// before the if-guard (which would cause variable scoping issues). Limit how far
+		// back we cut to the if-guard body start position.
+		if g.inside_if_guard && (g.pref.is_vlines || g.pref.is_coverage) {
+			cut_pos := if g.nth_stmt_pos(0) < g.if_guard_body_pos {
+				g.if_guard_body_pos
+			} else {
+				g.nth_stmt_pos(0)
+			}
+			cur_line = g.out.cut_to(cut_pos).trim_left(' \t')
+		} else {
+			cur_line = g.go_before_last_stmt().trim_left(' \t')
+		}
 		tmp_var = g.new_tmp_var()
 		mut func_decl := ''
 		ret_final_sym := g.table.final_sym(node.return_type)

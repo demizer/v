@@ -137,6 +137,8 @@ mut:
 	inside_opt_data           bool
 	inside_if_option          bool
 	inside_if_result          bool
+	inside_if_guard           bool // inside the body of an if-guard (if x := expr() { ... })
+	if_guard_body_pos         int  // output buffer position at the start of if-guard body
 	inside_match_option       bool
 	inside_match_result       bool
 	inside_vweb_tmpl          bool
@@ -2272,6 +2274,7 @@ fn (mut g Gen) stmts_with_tmp_var(stmts []ast.Stmt, tmp_var string) bool {
 				}
 			} else {
 				mut is_array_fixed_init := false
+				mut is_array_fixed_field := false
 				mut ret_type := ast.void_type
 
 				g.set_current_pos_as_last_stmt_pos()
@@ -2284,17 +2287,24 @@ fn (mut g Gen) stmts_with_tmp_var(stmts []ast.Stmt, tmp_var string) bool {
 					if stmt.expr is ast.ArrayInit && stmt.expr.is_fixed {
 						is_array_fixed_init = true
 						ret_type = stmt.expr.typ
+					} else if (g.pref.is_vlines || g.pref.is_coverage)
+						&& g.table.final_sym(stmt.typ).kind == .array_fixed {
+						// Handle accessing fixed array fields (like s.error) for coverage/debug
+						is_array_fixed_field = true
+						ret_type = stmt.typ
 					}
 				}
 				if !is_noreturn {
 					if is_array_fixed_init {
 						g.write('memcpy(${tmp_var}, (${g.styp(ret_type)})')
+					} else if is_array_fixed_field {
+						g.write('memcpy(${tmp_var}, ')
 					} else {
 						g.write('${tmp_var} = ')
 					}
 				}
 				g.stmt(stmt)
-				if is_array_fixed_init {
+				if is_array_fixed_init || is_array_fixed_field {
 					lines := g.go_before_last_stmt().trim_right('; \n')
 					g.writeln('${lines}, sizeof(${tmp_var}));')
 				}
