@@ -1,0 +1,114 @@
+// vtest vflags: -g
+// Test that match expressions compile correctly with -g flag.
+//
+// Background: When compiling with -g or -coverage, we force if/else chain generation
+// instead of C ternary expressions, so that #line directives and coverage points can
+// be emitted for each match arm.
+//
+// This test verifies that all match expression patterns work correctly:
+// 1. Basic match with return value - gets #line directives
+// 2. Match inside if-guard body - doesn't hoist code above if-guard scope
+// 3. Match returning fixed array - uses memcpy for assignment
+
+enum MessageButtons {
+	ok
+	ok_cancel
+	yes_no
+	yes_no_cancel
+}
+
+fn get_button_labels(buttons MessageButtons) []string {
+	return match buttons {
+		.ok { ['OK'] }
+		.ok_cancel { ['OK', 'Cancel'] }
+		.yes_no { ['Yes', 'No'] }
+		.yes_no_cancel { ['Yes', 'No', 'Cancel'] }
+	}
+}
+
+// Test: nested match inside if-guard
+// Verifies match code doesn't get hoisted above if-guard scope
+enum Kind {
+	button
+	label
+}
+
+enum ActionType {
+	show
+	hide
+	toggle
+}
+
+struct Action {
+	action_type     ActionType
+	target_id       string
+	checkpoint_name string
+}
+
+struct Comp {
+	kind  Kind
+	label string
+}
+
+fn get_action() ?Action {
+	return Action{.show, 'modal1', 'cp1'}
+}
+
+fn generate_code(comp Comp) string {
+	pos := 'set_pos()\n'
+	return match comp.kind {
+		.button {
+			if action := get_action() {
+				// This nested match uses 'action' from the if-guard
+				action_code := match action.action_type {
+					.show { 'state.${action.target_id}_open = true' }
+					.hide { 'state.${action.target_id}_open = false' }
+					.toggle { 'state.${action.target_id}_open = !state.${action.target_id}_open' }
+				}
+				pos + 'button { ${action_code} checkpoint: ${action.checkpoint_name} }\n'
+			} else {
+				pos + 'button { no action }\n'
+			}
+		}
+		.label {
+			pos + 'label\n'
+		}
+	}
+}
+
+// Test: match returning fixed array
+// Verifies memcpy is used for fixed array assignment in if/else chains
+enum ColorType {
+	red
+	green
+}
+
+struct Colors {
+	red   [4]f32
+	green [4]f32
+}
+
+fn get_color(t ColorType, c Colors) [4]f32 {
+	return match t {
+		.red { c.red }
+		.green { c.green }
+	}
+}
+
+fn main() {
+	// Test 1: basic match
+	labels := get_button_labels(.ok)
+	println(labels)
+
+	// Test 2: nested match inside if-guard
+	result := generate_code(Comp{.button, 'OK'})
+	println(result)
+
+	// Test 3: match returning fixed array
+	colors := Colors{
+		red:   [f32(1.0), 0.0, 0.0, 1.0]!
+		green: [f32(0.0), 1.0, 0.0, 1.0]!
+	}
+	color := get_color(.red, colors)
+	println(color)
+}

@@ -1,0 +1,82 @@
+// Test for coverage with match expression inside if-guard inside another match
+// The inner match arm accesses a variable bound by the if-guard
+// This should not cause "'action' undeclared" C error
+
+enum ComponentKind {
+	button
+	label
+	checkbox
+}
+
+enum ActionType {
+	show
+	hide
+	toggle
+}
+
+struct Action {
+	action_type ActionType
+	target_id   string
+}
+
+struct Component {
+	kind  ComponentKind
+	id    string
+	label string
+}
+
+fn get_action(id string) ?&Action {
+	if id == 'btn1' {
+		return &Action{
+			action_type: .show
+			target_id:   'modal1'
+		}
+	}
+	return none
+}
+
+fn generate_code(comp &Component) string {
+	pos := 'ctx.set_cursor_pos(0, 0)\n'
+	return match comp.kind {
+		.button {
+			if action := get_action(comp.id) {
+				action_code := match action.action_type {
+					.show { 'state.${action.target_id}_open = true' }
+					.hide { 'state.${action.target_id}_open = false' }
+					.toggle { 'state.${action.target_id}_open = !state.${action.target_id}_open' }
+				}
+				pos + "if ctx.button('${comp.label}') {\n${action_code}\n}\n"
+			} else {
+				pos + "if ctx.button('${comp.label}') { }\n"
+			}
+		}
+		.label {
+			pos + "ctx.text('${comp.label}')\n"
+		}
+		.checkbox {
+			pos + "ctx.checkbox('${comp.id}')\n"
+		}
+	}
+}
+
+fn main() {
+	comp1 := Component{
+		kind:  .button
+		id:    'btn1'
+		label: 'Open Modal'
+	}
+	result := generate_code(&comp1)
+	println(result)
+	assert result.contains('state.modal1_open = true'), result
+
+	comp2 := Component{
+		kind:  .label
+		id:    'lbl1'
+		label: 'Hello'
+	}
+	result2 := generate_code(&comp2)
+	println(result2)
+	assert result2.contains("ctx.text('Hello')"), result2
+
+	println('OK')
+}

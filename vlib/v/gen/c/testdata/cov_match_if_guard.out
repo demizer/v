@@ -1,0 +1,9 @@
+ctx.set_cursor_pos(0, 0)
+if ctx.button('Open Modal') {
+state.modal1_open = true
+}
+
+ctx.set_cursor_pos(0, 0)
+ctx.text('Hello')
+
+OK

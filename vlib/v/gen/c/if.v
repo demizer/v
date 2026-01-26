@@ -716,6 +716,13 @@ fn (mut g Gen) if_expr(node ast.IfExpr) {
 				g.inside_interface_deref = inside_interface_deref_old
 			}
 		}
+		// Track if we're inside an if-guard body for match expression codegen
+		was_inside_if_guard := g.inside_if_guard
+		was_if_guard_body_pos := g.if_guard_body_pos
+		if branch.cond is ast.IfGuardExpr {
+			g.inside_if_guard = true
+			g.if_guard_body_pos = g.out.len
+		}
 		if needs_tmp_var {
 			prev_expected_cast_type := g.expected_cast_type
 			if node.is_expr && (g.table.sym(resolved_node_typ).kind == .sum_type
@@ -736,6 +743,8 @@ fn (mut g Gen) if_expr(node ast.IfExpr) {
 			g.write_defer_stmts(branch.scope, false, node.pos)
 			g.stmt_path_pos << stmt_pos
 		}
+		g.inside_if_guard = was_inside_if_guard
+		g.if_guard_body_pos = was_if_guard_body_pos
 	}
 	if node.branches.len > 0 {
 		g.writeln('}')

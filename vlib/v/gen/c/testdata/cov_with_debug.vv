@@ -1,0 +1,40 @@
+// vtest vflags: -g -cov /tmp/cov_test_output
+// Test that coverage works correctly with -g flag.
+//
+// Background: When both -g and -cov are used, coverage points (_v_cov[...]++)
+// are inserted and #line directives are emitted. The coverage point insertion
+// must not break the #line directive formatting.
+
+fn simple_func() int {
+	x := 5
+	return x
+}
+
+fn func_with_if(a int) int {
+	if a > 0 {
+		return a * 2
+	}
+	return 0
+}
+
+fn func_with_match(x int) string {
+	return match x {
+		1 { 'one' }
+		2 { 'two' }
+		else { 'other' }
+	}
+}
+
+fn main() {
+	// Test simple function
+	result1 := simple_func()
+	println(result1)
+
+	// Test function with if
+	result2 := func_with_if(5)
+	println(result2)
+
+	// Test function with match
+	result3 := func_with_match(1)
+	println(result3)
+}

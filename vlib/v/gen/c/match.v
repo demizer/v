@@ -16,6 +16,13 @@ fn (g &Gen) match_cond_can_use_directly(cond ast.Expr) bool {
 fn (mut g Gen) need_tmp_var_in_match(node ast.MatchExpr) bool {
 	resolved_return_type := g.infer_match_expr_type(node)
 	if node.is_expr && resolved_return_type != ast.void_type && resolved_return_type != 0 {
+		// When generating coverage (-coverage), force if/else chain instead of ternary
+		// so that coverage points can be emitted for each match arm.
+		// Note: Don't force this when inside an if-guard, as the hoisting mechanism
+		// conflicts with coverage's buffer manipulation and causes scoping issues.
+		if g.pref.is_coverage && !g.inside_if_guard {
+			return true
+		}
 		if g.inside_struct_init {
 			return true
 		}
@@ -104,7 +111,21 @@ fn (mut g Gen) match_expr(node ast.MatchExpr) {
 	}
 	if need_tmp_var {
 		g.empty_line = true
-		cur_line = g.go_before_last_stmt().trim_left(' \t')
+		// When inside an if-guard body with -g (but not -cov), don't hoist the match code
+		// before the if-guard (which would cause variable scoping issues). Limit how far
+		// back we cut to the if-guard body start position.
+		// Note: Don't use cut_to when coverage is enabled - coverage has its own buffer
+		// manipulation that conflicts with this.
+		if g.inside_if_guard && g.pref.is_vlines && !g.pref.is_coverage {
+			cut_pos := if g.nth_stmt_pos(0) < g.if_guard_body_pos {
+				g.if_guard_body_pos
+			} else {
+				g.nth_stmt_pos(0)
+			}
+			cur_line = g.out.cut_to(cut_pos).trim_left(' \t')
+		} else {
+			cur_line = g.go_before_last_stmt().trim_left(' \t')
+		}
 		tmp_var = g.new_tmp_var()
 		mut func_decl := ''
 		ret_final_sym := g.table.final_sym(resolved_return_type)
@@ -610,7 +631,7 @@ fn (mut g Gen) match_expr_classic(node ast.MatchExpr, is_expr bool, cond_var str
 				g.writeln2('\tgoto end_block_${node.pos.line_nr};', '}')
 				g.set_current_pos_as_last_stmt_pos()
 			} else {
-				g.write('}')
+				g.writeln('}')
 			}
 		}
 	}
