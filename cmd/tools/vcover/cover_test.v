@@ -30,7 +30,6 @@ fn test_help() {
 	assert res.output.contains('-v, --verbose             Be more verbose while processing the coverages.')
 	assert res.output.contains('-H, --hotspots            Show most frequently executed covered lines.')
 	assert res.output.contains('-P, --percentages         Show coverage percentage per file.')
-	assert res.output.contains('--lcov <string>           Write an LCOV line coverage report')
 	assert res.output.contains('-S, --show_test_files     Show `_test.v` files as well (normally filtered).')
 	assert res.output.contains('-A, --absolute            Use absolute paths for all files')
 	assert res.output.contains('-o, --out <string>        Generate an HTML report')
@@ -46,8 +45,7 @@ fn test_simple() {
 	assert !os.exists(t2), t2
 	assert !os.exists(t3), t3
 
-	r1 :=
-		execute('${os.quoted_path(vexe)} -no-skip-unused -coverage ${os.quoted_path(t1)} cmd/tools/vcover/testdata/simple/t1_test.v')
+	r1 := execute('${os.quoted_path(vexe)} -no-skip-unused -cov-data-dir ${os.quoted_path(t1)} cmd/tools/vcover/testdata/simple/t1_test.v')
 	assert r1.exit_code == 0, r1.str()
 	assert r1.output.trim_space() == '10', r1.str()
 	assert os.exists(t1), t1
@@ -55,24 +53,9 @@ fn test_simple() {
 	filter1 := execute(cmd)
 	assert filter1.exit_code == 0, filter1.output
 	assert filter1.output.contains('cmd/tools/vcover/testdata/simple/simple.v'), filter1.output
-	// AST-based counting: 9 covered (with inference) / 16 total code lines = 56.25%
-	assert filter1.output.trim_space().ends_with('|      9 |     16 |  56.25%'), filter1.output
-	lcov_file := np(os.join_path(tfolder, 'coverage', 'simple.lcov'))
-	os.rm(lcov_file) or {}
-	lcov :=
-		execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t1)} --filter vcover/testdata/simple/ --lcov ${os.quoted_path(lcov_file)} -P false')
-	assert lcov.exit_code == 0, lcov.str()
-	assert os.exists(lcov_file), lcov_file
-	lcov_content := os.read_file(lcov_file) or { panic(err) }
-	assert lcov_content.contains('SF:${np(os.join_path(vroot,
-		'cmd/tools/vcover/testdata/simple/simple.v'))}')
-	assert lcov_content.contains('DA:4,1')
-	assert lcov_content.contains('DA:12,0')
-	assert lcov_content.contains('LF:9')
-	assert lcov_content.contains('LH:4')
-	assert lcov_content.contains('end_of_record')
-	hfilter1 :=
-		execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t1)} --filter vcover/testdata/simple/ -H -P false')
+	// AST-based counting: 8 covered (with inference) / 16 total code lines = 50.00%
+	assert filter1.output.trim_space().ends_with('|      8 |     16 |  50.00%'), filter1.output
+	hfilter1 := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t1)} --filter vcover/testdata/simple/ -H -P false')
 	assert hfilter1.exit_code == 0, hfilter1.output
 	assert !hfilter1.output.contains('%'), hfilter1.output
 	houtput1 := hfilter1.output.trim_space().split_into_lines()
@@ -90,19 +73,16 @@ fn test_simple() {
 	assert nzeros1.any(it.contains('simple.v:8')), nzeros1.str()
 	assert nzeros1.any(it.contains('simple.v:25')), nzeros1.str()
 
-	r2 :=
-		execute('${os.quoted_path(vexe)} -no-skip-unused -coverage ${os.quoted_path(t2)} cmd/tools/vcover/testdata/simple/t2_test.v')
+	r2 := execute('${os.quoted_path(vexe)} -no-skip-unused -cov-data-dir ${os.quoted_path(t2)} cmd/tools/vcover/testdata/simple/t2_test.v')
 	assert r2.exit_code == 0, r2.str()
 	assert r2.output.trim_space() == '24', r2.str()
 	assert os.exists(t2), t2
-	filter2 :=
-		execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t2)} --filter vcover/testdata/simple')
+	filter2 := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t2)} --filter vcover/testdata/simple')
 	assert filter2.exit_code == 0, filter2.output
 	assert filter2.output.contains('cmd/tools/vcover/testdata/simple/simple.v')
-	// AST-based counting: mul() covered instead of sum(), 11 covered / 16 total = 68.75%
-	assert filter2.output.trim_space().ends_with('|     11 |     16 |  68.75%'), filter2.output
-	hfilter2 :=
-		execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t2)} --filter testdata/simple -H -P false')
+	// AST-based counting: mul() covered instead of sum(), 10 covered / 16 total = 62.50%
+	assert filter2.output.trim_space().ends_with('|     10 |     16 |  62.50%'), filter2.output
+	hfilter2 := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t2)} --filter testdata/simple -H -P false')
 	assert hfilter2.exit_code == 0, hfilter2.output
 	assert !hfilter2.output.contains('%'), hfilter2.output
 	houtput2 := hfilter2.output.trim_space().split_into_lines()
@@ -119,8 +99,7 @@ fn test_simple() {
 	assert nzeros2.any(it.contains('simple.v:25')), nzeros2.str()
 
 	// Run both tests. The coverage should be combined and == 100%
-	r3 :=
-		execute('${os.quoted_path(vexe)} -no-skip-unused -coverage ${os.quoted_path(t3)} test cmd/tools/vcover/testdata/simple/')
+	r3 := execute('${os.quoted_path(vexe)} -no-skip-unused -cov-data-dir ${os.quoted_path(t3)} test cmd/tools/vcover/testdata/simple/')
 	assert r3.exit_code == 0, r3.str()
 	assert r3.output.trim_space().contains('Summary for all V _test.v files: '), r3.str()
 	assert os.exists(t3), t3
@@ -138,7 +117,7 @@ fn test_html_report() {
 
 	// Ensure t3 coverage data exists
 	if !os.exists(t3) {
-		r := execute('${os.quoted_path(vexe)} -no-skip-unused -coverage ${os.quoted_path(t3)} test cmd/tools/vcover/testdata/simple/')
+		r := execute('${os.quoted_path(vexe)} -no-skip-unused -cov-data-dir ${os.quoted_path(t3)} test cmd/tools/vcover/testdata/simple/')
 		assert r.exit_code == 0, r.str()
 	}
 
@@ -178,7 +157,7 @@ fn test_html_report_partial_coverage() {
 
 	// Ensure t1 coverage data exists
 	if !os.exists(t1) {
-		r := execute('${os.quoted_path(vexe)} -no-skip-unused -coverage ${os.quoted_path(t1)} cmd/tools/vcover/testdata/simple/t1_test.v')
+		r := execute('${os.quoted_path(vexe)} -no-skip-unused -cov-data-dir ${os.quoted_path(t1)} cmd/tools/vcover/testdata/simple/t1_test.v')
 		assert r.exit_code == 0, r.str()
 	}
 
@@ -188,10 +167,10 @@ fn test_html_report_partial_coverage() {
 
 	// Check index.html shows partial coverage
 	index := os.read_file(os.join_path(html_dir, 'index.html')) or { '' }
-	// AST-based counting: 9 covered / 16 total = 56.25%
-	assert index.contains('56'), 'should show ~56% coverage'
+	// AST-based counting: 8 covered / 16 total = 50.00%
+	assert index.contains('50'), 'should show ~50% coverage'
 	assert index.contains('pct-med'), 'should have medium color class for 50-80%'
-	assert index.contains('9 / 16'), 'should show 9/16 lines'
+	assert index.contains('8 / 16'), 'should show 8/16 lines'
 
 	// Check file HTML has both covered and uncovered lines
 	file_html_path := os.join_path(html_dir, 'files', 'cmd', 'tools', 'vcover', 'testdata',

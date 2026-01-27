@@ -21,7 +21,19 @@ mut:
 	build_options string
 }
 
+// should_cover_file checks if a file should be included in coverage tracking.
+// All files are always instrumented for coverage. The -cov flag only controls
+// what appears in the final report (holistic view), not what gets instrumented.
+fn (g &Gen) should_cover_file(filepath string) bool {
+	// Always instrument all files - filtering is done at report time
+	return true
+}
+
 fn (mut g Gen) write_coverage_point(pos token.Pos) {
+	// Check if this file should be included in coverage
+	if !g.should_cover_file(g.file.path) {
+		return
+	}
 	if g.unique_file_path_hash !in g.coverage_files {
 		build_options := g.pref.build_options.join(' ')
 		fhash := hash.sum64_string('${build_options}:${g.unique_file_path_hash}', 32).hex_full()
@@ -51,11 +63,24 @@ fn (mut g Gen) write_coverage_stats() {
 	build_options := g.pref.build_options.join(' ')
 	coverage_dir := os.real_path(g.pref.coverage_dir).replace('\\', '/')
 	coverage_meta_folder := '${coverage_dir}/meta'
+
+	// Handle -cov-reset: clear existing coverage data
+	if g.pref.coverage_reset && os.exists(coverage_dir) {
+		os.rmdir_all(coverage_dir) or {}
+	}
+
 	if !os.exists(coverage_meta_folder) {
 		os.mkdir_all(coverage_meta_folder) or {}
 	}
-	counter_ulid :=
-		rand.ulid() // rand.ulid provides a hash+timestamp, so that a collision is extremely unlikely
+
+	// Handle -cov-append=false (default behavior without -cov-append)
+	// When not appending, clear old CSV counter files but keep metadata
+	if !g.pref.coverage_append && os.exists(coverage_dir) {
+		for csv_file in os.walk_ext(coverage_dir, '.csv') {
+			os.rm(csv_file) or {}
+		}
+	}
+	counter_ulid := rand.ulid() // rand.ulid provides a hash+timestamp, so that a collision is extremely unlikely
 	g.cov_declarations.writeln('')
 	g.cov_declarations.writeln('void vprint_coverage_stats() {')
 	g.cov_declarations.writeln('\tchar cov_filename[2048];')

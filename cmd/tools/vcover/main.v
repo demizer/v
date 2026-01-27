@@ -17,10 +17,10 @@ mut:
 	show_hotspots      bool
 	show_percentages   bool
 	show_test_files    bool
+	show_hits          bool
 	use_absolute_paths bool
 	be_verbose         bool
-	lcov_output        string
-	filter             string
+	filters            []string
 	working_folder     string
 	out_dir            string
 	view               bool
@@ -28,6 +28,8 @@ mut:
 	targets            []string
 	meta               map[string]MetaData // aggregated meta data, read from all .json files
 	all_lines_per_file map[string][]int    // aggregated by load_meta
+	coverage_sources   []string            // directories specified with -cov (for holistic view)
+	all_source_files   []string            // all .v files in coverage_sources
 
 	counters         map[string]u64         // incremented by process_target, based on each .csv file
 	lines_per_file   map[string]map[int]int // incremented by process_target, based on each .csv file
@@ -60,7 +62,51 @@ fn (mut ctx Context) post_process_all_metas() {
 		for line in lines_per_file {
 			ctx.counters['${m.file}:${line}:'] = 0
 		}
+		// Extract -cov directories from build_options for holistic view
+		ctx.extract_coverage_sources(m.build_options)
 	}
+	// Scan coverage sources for all .v files (holistic view)
+	ctx.scan_coverage_sources()
+}
+
+// extract_coverage_sources parses build_options to find -cov directories
+fn (mut ctx Context) extract_coverage_sources(build_options string) {
+	parts := build_options.split(' ')
+	mut i := 0
+	for i < parts.len {
+		if parts[i] in ['-cov', '-coverage'] && i + 1 < parts.len {
+			src := parts[i + 1]
+			if src !in ctx.coverage_sources {
+				ctx.coverage_sources << src
+				ctx.verbose('Found coverage source: ${src}')
+			}
+			i += 2
+		} else {
+			i++
+		}
+	}
+}
+
+// scan_coverage_sources finds all .v files in coverage source directories
+fn (mut ctx Context) scan_coverage_sources() {
+	for src_dir in ctx.coverage_sources {
+		if !os.exists(src_dir) {
+			ctx.verbose('Coverage source directory does not exist: ${src_dir}')
+			continue
+		}
+		// Walk the directory and find all .v files
+		for vfile in os.walk_ext(src_dir, '.v') {
+			real_path := os.real_path(vfile).replace('\\', '/')
+			if real_path !in ctx.all_source_files {
+				ctx.all_source_files << real_path
+				// Add to lines_per_file with empty map if not already present
+				if real_path !in ctx.lines_per_file {
+					ctx.lines_per_file[real_path] = map[int]int{}
+				}
+			}
+		}
+	}
+	ctx.verbose('Total source files from -cov directories: ${ctx.all_source_files.len}')
 }
 
 fn (mut ctx Context) post_process_all_targets() {
@@ -155,19 +201,54 @@ fn (ctx &Context) build_basic_file_coverage(file string) FileCoverage {
 	}
 }
 
+struct Filters {
+	include []string
+	exclude []string
+}
+
+fn (ctx &Context) get_filters() Filters {
+	// Flatten filters: each -f can have comma-separated values
+	// Patterns starting with ! are exclusions
+	mut include := []string{}
+	mut exclude := []string{}
+	for f in ctx.filters {
+		for part in f.split(',') {
+			trimmed := part.trim_space()
+			if trimmed != '' {
+				if trimmed.starts_with('!') {
+					exclude << trimmed[1..]
+				} else {
+					include << trimmed
+				}
+			}
+		}
+	}
+	return Filters{include, exclude}
+}
+
+fn (f &Filters) matches(path string) bool {
+	// If there are include filters, path must match at least one
+	if f.include.len > 0 {
+		if !f.include.any(path.contains(it)) {
+			return false
+		}
+	}
+	// If path matches any exclude filter, reject it
+	if f.exclude.len > 0 {
+		if f.exclude.any(path.contains(it)) {
+			return false
+		}
+	}
+	return true
+}
+
 fn (mut ctx Context) show_report() ! {
-	filters := ctx.filter.split(',').filter(it != '')
+	filters := ctx.get_filters()
 	if ctx.show_hotspots {
-		mut locations := []string{cap: ctx.counters.len}
-		for location, _ in ctx.counters {
-			if !ctx.matches_filters(location, filters) {
+		for location, hits in ctx.counters {
+			if !filters.matches(location) {
 				continue
 			}
-			locations << location
-		}
-		locations.sort()
-		for location in locations {
-			hits := ctx.counters[location]
 			mut final_path := normalize_path(location)
 			if !ctx.use_absolute_paths {
 				final_path = location.all_after_first('${ctx.working_folder}/')
@@ -176,7 +257,15 @@ fn (mut ctx Context) show_report() ! {
 		}
 	}
 	if ctx.show_percentages {
-		for file in ctx.sorted_hit_files(filters) {
+		for file, _ in ctx.lines_per_file {
+			if !ctx.show_test_files {
+				if file.ends_with('_test.v') || file.ends_with('_test.c.v') {
+					continue
+				}
+			}
+			if !filters.matches(file) {
+				continue
+			}
 			// Use AST-based coverage for accurate line counting
 			fc := ctx.build_ast_file_coverage(file)
 			coverage_percent := fc.coverage_percentage()
@@ -187,76 +276,10 @@ fn (mut ctx Context) show_report() ! {
 			println('${final_path:-80s} | ${fc.covered_code:6} | ${fc.total_code:6} | ${coverage_percent:6.2f}%')
 		}
 	}
-	if ctx.lcov_output != '' {
-		ctx.write_lcov_report(filters)!
-	}
 }
 
 fn normalize_path(path string) string {
 	return path.replace(os.path_separator, '/')
-}
-
-fn (ctx &Context) matches_filters(path string, filters []string) bool {
-	if filters.len == 0 {
-		return true
-	}
-	return filters.any(path.contains(it))
-}
-
-fn (ctx &Context) should_include_file(file string, filters []string) bool {
-	if !ctx.show_test_files && (file.ends_with('_test.v') || file.ends_with('_test.c.v')) {
-		return false
-	}
-	return ctx.matches_filters(file, filters)
-}
-
-fn (ctx &Context) sorted_hit_files(filters []string) []string {
-	mut files := []string{}
-	for file, _ in ctx.lines_per_file {
-		if !ctx.should_include_file(file, filters) {
-			continue
-		}
-		files << file
-	}
-	files.sort()
-	return files
-}
-
-fn (ctx &Context) sorted_files(filters []string) []string {
-	mut files := []string{}
-	for file, _ in ctx.all_lines_per_file {
-		if !ctx.should_include_file(file, filters) {
-			continue
-		}
-		files << file
-	}
-	files.sort()
-	return files
-}
-
-fn (ctx &Context) write_lcov_report(filters []string) ! {
-	output_path := os.real_path(ctx.lcov_output)
-	output_dir := os.dir(output_path)
-	if output_dir != '' && !os.exists(output_dir) {
-		os.mkdir_all(output_dir)!
-	}
-	mut output := []string{}
-	for file in ctx.sorted_files(filters) {
-		mut lines := ctx.all_lines_per_file[file].clone()
-		lines.sort()
-		hit_lines := ctx.lines_per_file[file].len
-		output << 'TN:'
-		output << 'SF:${normalize_path(file)}'
-		for line in lines {
-			hits := ctx.counters['${file}:${line}:']
-			output << 'DA:${line},${hits}'
-		}
-		output << 'LF:${lines.len}'
-		output << 'LH:${hit_lines}'
-		output << 'end_of_record'
-	}
-	os.write_file(output_path, output.join_lines())!
-	ctx.verbose('Wrote LCOV report to ${output_path}')
 }
 
 fn main() {
@@ -265,32 +288,51 @@ fn main() {
 	ctx.working_folder = normalize_path(os.real_path(os.getwd()))
 	mut fp := flag.new_flag_parser(os.args#[1..])
 	fp.application('v cover')
-	fp.version('0.0.2')
-	fp.description('Analyze & make reports, based on cover files, produced by running programs and tests, compiled with `-coverage folder/`')
+	fp.version('0.4')
+	fp.description('Analyze & make reports, based on cover files, produced by running programs and tests, compiled with `-cov-data-dir folder/`')
 	fp.arguments_description('[folder1/ file2 ...]')
 	fp.skip_executable()
 	ctx.show_help = fp.bool('help', `h`, false, 'Show this help text.')
-	ctx.be_verbose = fp.bool('verbose', `v`, false,
-		'Be more verbose while processing the coverages.')
-	ctx.show_hotspots = fp.bool('hotspots', `H`, false,
-		'Show most frequently executed covered lines.')
+	ctx.be_verbose = fp.bool('verbose', `v`, false, 'Be more verbose while processing the coverages.')
+	ctx.show_hotspots = fp.bool('hotspots', `H`, false, 'Show most frequently executed covered lines.')
 	ctx.show_percentages = fp.bool('percentages', `P`, true, 'Show coverage percentage per file.')
-	ctx.lcov_output = fp.string('lcov', 0, '',
-		'Write an LCOV line coverage report to the specified file path.')
-	ctx.show_test_files = fp.bool('show_test_files', `S`, false,
-		'Show `_test.v` files as well (normally filtered).')
-	ctx.use_absolute_paths = fp.bool('absolute', `A`, false,
-		'Use absolute paths for all files, no matter the current folder. By default, files inside the current folder, are shown with a relative path.')
-	ctx.filter = fp.string('filter', `f`, '', 'Filter only the matching source path patterns.')
+	ctx.show_test_files = fp.bool('show_test_files', `S`, false, 'Show `_test.v` files as well (normally filtered).')
+	ctx.show_hits = fp.bool('showhits', 0, false, 'Show hit counts for each line in HTML report.')
+	ctx.use_absolute_paths = fp.bool('absolute', `A`, false, 'Use absolute paths for all files, no matter the current folder. By default, files inside the current folder, are shown with a relative path.')
+	ctx.filters = fp.string_multi('filter', `f`, 'Filter source paths (repeatable, comma-separated, !pattern to exclude).')
 	ctx.out_dir = fp.string('out', `o`, '', 'Generate an HTML report in the specified directory.')
 	ctx.view = fp.bool('view', 0, false, 'Open the generated HTML report in the default browser.')
+	// Compatibility flags (same as compiler flags for consistency)
+	cov_data_dir := fp.string('cov-data-dir', 0, '', 'Coverage data directory (alias for positional argument).')
+	cov_report := fp.string('cov-report', 0, '', 'Report format:path (e.g., html:report/). Sets output directory.')
 	if ctx.show_help {
 		println(fp.usage())
 		exit(0)
 	}
-	targets := fp.finalize() or {
+	mut targets := fp.finalize() or {
 		log.error(fp.usage())
 		exit(1)
+	}
+	// Handle -cov-data-dir flag (adds to targets)
+	if cov_data_dir != '' {
+		targets << cov_data_dir
+	}
+	// Handle -cov-report flag (parses format:path)
+	if cov_report != '' {
+		parts := cov_report.split_nth(':', 2)
+		report_format := parts[0]
+		if report_format == 'html' {
+			if parts.len > 1 && parts[1] != '' {
+				ctx.out_dir = parts[1]
+			} else {
+				ctx.out_dir = 'coverage_report'
+			}
+		} else if report_format == 'term' || report_format == 'terminal' {
+			// Terminal output is default, no special handling needed
+		} else {
+			log.error('Unknown report format: ${report_format}. Use html:path or term.')
+			exit(1)
+		}
 	}
 	ctx.verbose('Targets: ${targets}')
 	for t in targets {
@@ -316,7 +358,8 @@ fn main() {
 	ctx.post_process_all_metas()
 	ctx.verbose('Final ctx.targets.len: ${ctx.targets.len}')
 	ctx.verbose('Final ctx.meta.len: ${ctx.meta.len}')
-	ctx.verbose('Final ctx.filter: ${ctx.filter}')
+	f := ctx.get_filters()
+	ctx.verbose('Final filters - include: ${f.include}, exclude: ${f.exclude}')
 	if ctx.targets.len == 0 {
 		log.error('0 cover targets')
 		exit(1)

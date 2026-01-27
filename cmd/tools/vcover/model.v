@@ -26,18 +26,20 @@ enum LineType {
 }
 
 // CoverageStatus indicates whether a line is covered
+// Note: not_code is first so it's the default value for uninitialized structs
 enum CoverageStatus {
+	not_code  // blank, comment, etc. - doesn't count toward totals (default)
 	covered   // has hits or inferred covered
 	uncovered // is code but not covered
-	not_code  // blank, comment, etc. - doesn't count toward totals
 }
 
 // CoverageSource indicates where coverage information came from
+// Note: not_available is first so it's the default value for uninitialized structs
 enum CoverageSource {
+	not_available // not applicable (comments, blanks) - default
 	instrumented  // from V compiler coverage point
 	inferred      // from AST inference (headers, braces)
 	type_usage    // inferred from struct/enum usage on covered line
-	not_available // not applicable (comments, blanks)
 }
 
 // LineCoverage holds coverage information for a single source line

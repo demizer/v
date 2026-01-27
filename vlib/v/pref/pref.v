@@ -135,7 +135,11 @@ pub mut:
 	eval_argument      string   // `println(2+2)` on `v -e "println(2+2)"`. Note that this source code, will be evaluated in vsh mode, so 'v -e 'println(ls(".")!)' is valid.
 	test_runner        string   // can be 'simple' (fastest, but much less detailed), 'tap', 'normal'
 	profile_file       string   // the profile results will be stored inside profile_file
-	coverage_dir       string   // the coverage files will be stored inside coverage_dir
+	coverage_dir       string   // -cov-data-dir: where coverage data files are stored (default: .coverage/)
+	coverage_sources   []string // -cov: source directories to include in coverage analysis (multiple allowed)
+	coverage_report    string   // -cov-report: report format:path (e.g., "html:coverage_report/")
+	coverage_append    bool     // -cov-append: append to existing coverage data instead of clearing
+	coverage_reset     bool     // -cov-reset: clear accumulated coverage data
 	profile_no_inline  bool     // when true, @[inline] functions would not be profiled
 	profile_fns        []string // when set, profiling will be off by default, but inside these functions (and what they call) it will be on.
 	translated         bool     // `v translate doom.v` are we running V code translated from C? allow globals, ++ expressions, etc
@@ -805,9 +809,29 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 					i++
 				}
 			}
-			'-cov', '-coverage' {
+			'-cov', '--cov', '-coverage', '--coverage' {
+				// -cov <dir> adds a source directory to include in coverage analysis
+				cov_src := cmdline.option(args[i..], arg, '-')
+				res.coverage_sources << os.real_path(cov_src)
+				i++
+			}
+			'-cov-data-dir', '--cov-data-dir' {
+				// -cov-data-dir <path> specifies where coverage data files are stored
 				res.coverage_dir = cmdline.option(args[i..], arg, '-')
 				i++
+			}
+			'-cov-report', '--cov-report' {
+				// -cov-report <format>:<path> sets the report format and output path
+				res.coverage_report = cmdline.option(args[i..], arg, '')
+				i++
+			}
+			'-cov-append', '--cov-append' {
+				// -cov-append: append to existing coverage data
+				res.coverage_append = true
+			}
+			'-cov-reset', '--cov-reset' {
+				// -cov-reset: clear accumulated coverage data
+				res.coverage_reset = true
 			}
 			'-profile-fns' {
 				profile_fns := cmdline.option(args[i..], arg, '').split(',')
@@ -1338,9 +1362,28 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 	if 'trace' in res.compile_defines_all {
 		res.is_trace = true
 	}
-	if res.coverage_dir != '' {
+	// Coverage setup
+	if res.coverage_sources.len > 0 {
 		res.is_coverage = true
-		res.build_options << '-coverage ${res.coverage_dir}'
+		// Default coverage data directory if not set
+		if res.coverage_dir == '' {
+			res.coverage_dir = os.join_path(os.getwd(), '.coverage')
+		}
+		res.build_options << '-cov-data-dir ${res.coverage_dir}'
+		for cov_src in res.coverage_sources {
+			res.build_options << '-cov ${cov_src}'
+		}
+		if res.coverage_report != '' {
+			res.build_options << '-cov-report ${res.coverage_report}'
+		}
+		if res.coverage_append {
+			res.build_options << '-cov-append'
+		}
+	}
+	// Legacy: support old -cov <output_dir> style (when -cov-data-dir is used without -cov)
+	if res.coverage_dir != '' && res.coverage_sources.len == 0 {
+		res.is_coverage = true
+		res.build_options << '-cov-data-dir ${res.coverage_dir}'
 	}
 	// keep only the unique res.build_options:
 	mut m := map[string]string{}

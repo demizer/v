@@ -11,7 +11,7 @@ fn (ctx &Context) generate_html_report() ! {
 	os.mkdir_all(files_dir) or {}
 
 	// Calculate overall stats using AST-based coverage
-	filters := ctx.filter.split(',').filter(it != '')
+	filters := ctx.get_filters()
 	mut total_covered_count := 0
 	mut total_lines_count := 0
 	mut files_to_report := []string{}
@@ -25,10 +25,8 @@ fn (ctx &Context) generate_html_report() ! {
 			}
 		}
 		// Apply path filter
-		if filters.len > 0 {
-			if !filters.any(file.contains(it)) {
-				continue
-			}
+		if !filters.matches(file) {
+			continue
 		}
 		files_to_report << file
 		// Build AST-based file coverage
@@ -61,6 +59,11 @@ fn (ctx &Context) generate_html_report() ! {
 
 	html := $tmpl('templates/index.html')
 	os.write_file('${ctx.out_dir}/index.html', html)!
+
+	// Copy veasel image to output directory
+	veasel_data := $embed_file('../../../examples/vweb_fullstack/src/assets/veasel.png')
+	os.write_bytes('${ctx.out_dir}/veasel.png', veasel_data.to_bytes())!
+
 	ctx.verbose('HTML report generated in ${ctx.out_dir}')
 }
 
@@ -119,6 +122,10 @@ fn (ctx &Context) generate_file_html_with_coverage(file string, fc FileCoverage)
 		back_parts << '../'
 	}
 	back_path := back_parts.join('') + 'index.html'
+
+	// Control hits column visibility (used in template)
+	hits_display := if ctx.show_hits { '' } else { 'display: none;' }
+	_ = hits_display
 
 	// Read source file
 	source_content := os.read_file(file) or { '' }

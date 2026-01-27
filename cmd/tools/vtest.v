@@ -7,9 +7,12 @@ import v.pref
 
 struct Context {
 mut:
-	verbose   bool
-	fail_fast bool
-	run_only  []string
+	verbose          bool
+	fail_fast        bool
+	run_only         []string
+	coverage_sources []string // directories to cover
+	coverage_report  string   // report format:path (e.g., "html:report/")
+	coverage_dir     string   // where coverage data is stored
 }
 
 fn main() {
@@ -66,9 +69,18 @@ fn main() {
 			exit(1)
 		}
 	}
+	// Parse coverage flags from args_before
+	ctx.parse_coverage_flags(args_before)
+
 	ts.session_start('Testing...')
 	ts.test()
 	ts.session_stop('all V _test.v files')
+
+	// Generate coverage report if requested
+	if ctx.coverage_sources.len > 0 && ctx.coverage_report != '' {
+		ctx.generate_coverage_report()
+	}
+
 	if ts.failed_cmds.len > 0 {
 		exit(1)
 	}
@@ -82,7 +94,21 @@ fn show_usage() {
 	println('   B)')
 	println('      v test file_test.v : run test functions in a given test file.')
 	println('      v -stats test file_test.v : as above, but with more stats.')
-	println('   Note: you can also give many and mixed folder/ file_test.v arguments after `v test` .')
+	println('')
+	println('Coverage options:')
+	println('   -cov <dir>              : include directory in coverage analysis (can be used multiple times)')
+	println('   -cov-data-dir <path>    : where to store coverage data (default: .coverage/)')
+	println('   -cov-report <fmt:path>  : generate report (formats: html, term)')
+	println('   -cov-append             : append to existing coverage data')
+	println('   -cov-reset              : clear previous coverage data first')
+	println('')
+	println('Coverage examples:')
+	println('   v -cov src/ test folder/')
+	println('   v -cov src/ -cov lib/ -cov-report html:report/ test .')
+	println('   v -cov src/ -cov-report term test .')
+	println('   v -cov src/ -cov-data-dir /tmp/mycov -cov-append test .')
+	println('')
+	println('Note: you can also give many and mixed folder/ file_test.v arguments after `v test`.')
 	println('')
 }
 
@@ -220,4 +246,95 @@ fn extract_flag_string_array(flag_name string, mut after []string, flag_default 
 		after.delete(found)
 	}
 	return res
+}
+
+// parse_coverage_flags extracts coverage-related flags from compiler args
+fn (mut ctx Context) parse_coverage_flags(args []string) {
+	mut i := 0
+	for i < args.len {
+		arg := args[i]
+		if arg in ['-cov', '-coverage'] && i + 1 < args.len {
+			ctx.coverage_sources << os.real_path(args[i + 1])
+			i += 2
+		} else if arg == '-cov-data-dir' && i + 1 < args.len {
+			ctx.coverage_dir = args[i + 1]
+			i += 2
+		} else if arg == '-cov-report' && i + 1 < args.len {
+			ctx.coverage_report = args[i + 1]
+			i += 2
+		} else {
+			i++
+		}
+	}
+	// Set default coverage directory
+	if ctx.coverage_sources.len > 0 && ctx.coverage_dir == '' {
+		ctx.coverage_dir = os.join_path(os.getwd(), '.coverage')
+	}
+}
+
+// generate_coverage_report runs vcover to generate the coverage report
+fn (ctx &Context) generate_coverage_report() {
+	if ctx.coverage_dir == '' || !os.exists(ctx.coverage_dir) {
+		eprintln('Coverage data directory not found: ${ctx.coverage_dir}')
+		return
+	}
+
+	// Parse report format and path from -cov-report value
+	// Format: "html:path" or "term" or "json:path"
+	parts := ctx.coverage_report.split_nth(':', 2)
+	report_format := parts[0]
+	report_path := if parts.len > 1 { parts[1] } else { '' }
+
+	mut vcover_args := [ctx.coverage_dir]
+
+	// Add filter for coverage sources
+	if ctx.coverage_sources.len > 0 {
+		filters := ctx.coverage_sources.map(it.replace(os.getwd() + os.path_separator,
+			''))
+		vcover_args << '-f'
+		vcover_args << filters.join(',')
+	}
+
+	// Always show test files in coverage reports since we're running tests
+	vcover_args << '-S'
+
+	match report_format {
+		'html' {
+			if report_path != '' {
+				vcover_args << '-o'
+				vcover_args << report_path
+			}
+			println('\nGenerating HTML coverage report...')
+		}
+		'term', 'terminal' {
+			vcover_args << '-P'
+			println('\nCoverage report:')
+		}
+		'json' {
+			// JSON output would need to be added to vcover
+			println('\nJSON coverage report format not yet implemented')
+			return
+		}
+		else {
+			eprintln('Unknown coverage report format: ${report_format}')
+			return
+		}
+	}
+
+	// Run vcover
+	vexe := os.getenv('VEXE')
+	vcover_cmd := '${vexe} cover ${vcover_args.join(' ')}'
+	if ctx.verbose {
+		println('Running: ${vcover_cmd}')
+	}
+	result := os.execute(vcover_cmd)
+	if result.exit_code != 0 {
+		eprintln('Coverage report generation failed:')
+		eprintln(result.output)
+	} else {
+		print(result.output)
+		if report_format == 'html' && report_path != '' {
+			println('Coverage report generated at: ${os.real_path(report_path)}/index.html')
+		}
+	}
 }
