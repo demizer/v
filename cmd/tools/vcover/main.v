@@ -22,6 +22,8 @@ mut:
 	lcov_output        string
 	filter             string
 	working_folder     string
+	out_dir            string
+	view               bool
 
 	targets            []string
 	meta               map[string]MetaData // aggregated meta data, read from all .json files
@@ -231,6 +233,8 @@ fn main() {
 	ctx.use_absolute_paths = fp.bool('absolute', `A`, false,
 		'Use absolute paths for all files, no matter the current folder. By default, files inside the current folder, are shown with a relative path.')
 	ctx.filter = fp.string('filter', `f`, '', 'Filter only the matching source path patterns.')
+	ctx.out_dir = fp.string('out', `o`, '', 'Generate an HTML report in the specified directory.')
+	ctx.view = fp.bool('view', 0, false, 'Open the generated HTML report in the default browser.')
 	if ctx.show_help {
 		println(fp.usage())
 		exit(0)
@@ -273,4 +277,12 @@ fn main() {
 	}
 	ctx.post_process_all_targets()
 	ctx.show_report()!
+	if ctx.out_dir != '' {
+		ctx.generate_html_report()!
+		if ctx.view {
+			os.open_uri('file://${os.real_path(ctx.out_dir)}/index.html') or {
+				log.error('Failed to open browser: ${err}')
+			}
+		}
+	}
 }

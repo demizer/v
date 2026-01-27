@@ -33,6 +33,8 @@ fn test_help() {
 	assert res.output.contains('--lcov <string>           Write an LCOV line coverage report')
 	assert res.output.contains('-S, --show_test_files     Show `_test.v` files as well (normally filtered).')
 	assert res.output.contains('-A, --absolute            Use absolute paths for all files')
+	assert res.output.contains('-o, --out <string>        Generate an HTML report')
+	assert res.output.contains('--view                    Open the generated HTML report in the default browser.')
 }
 
 fn np(path string) string {
@@ -124,6 +126,74 @@ fn test_simple() {
 	assert filter3.exit_code == 0, filter3.str()
 	assert filter3.output.contains('cmd/tools/vcover/testdata/simple/simple.v'), filter3.str()
 	assert filter3.output.trim_space().match_glob('*cmd/tools/vcover/testdata/simple/simple.v *|      9 |      9 | 100.00%'), filter3.str()
+}
+
+fn test_html_report() {
+	// Use t3 data (combined tests = 100% coverage)
+	html_dir := np(os.join_path(tfolder, 'html_report'))
+	os.rmdir_all(html_dir) or {}
+
+	// Ensure t3 coverage data exists
+	if !os.exists(t3) {
+		r := execute('${os.quoted_path(vexe)} -no-skip-unused -coverage ${os.quoted_path(t3)} test cmd/tools/vcover/testdata/simple/')
+		assert r.exit_code == 0, r.str()
+	}
+
+	// Generate HTML report
+	r := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t3)} --out ${os.quoted_path(html_dir)} --filter simple/')
+	assert r.exit_code == 0, r.output
+
+	// Verify output files exist
+	assert os.exists(os.join_path(html_dir, 'index.html')), 'index.html should exist'
+	assert os.exists(os.join_path(html_dir, 'files')), 'files directory should exist'
+
+	// Check index.html content
+	index := os.read_file(os.join_path(html_dir, 'index.html')) or { '' }
+	assert index.contains('V Coverage Report'), 'should contain title'
+	assert index.contains('simple.v'), 'should contain file name'
+	assert index.contains('100'), 'should show 100% coverage'
+	assert index.contains('pct-high'), 'should have green color class'
+	assert index.contains('9 / 9'), 'should show 9/9 lines'
+
+	// Check individual file report exists
+	file_html_path := os.join_path(html_dir, 'files', 'cmd', 'tools', 'vcover', 'testdata',
+		'simple', 'simple.v.html')
+	assert os.exists(file_html_path), 'file HTML should exist at: ${file_html_path}'
+
+	// Check file HTML content
+	file_html := os.read_file(file_html_path) or { '' }
+	assert file_html.contains('covered'), 'should have covered lines'
+	assert file_html.contains('pub fn sum'), 'should contain source code'
+	assert file_html.contains('index.html'), 'should have back link'
+}
+
+fn test_html_report_partial_coverage() {
+	// Use t1 data (partial coverage = 44.44%)
+	html_dir := np(os.join_path(tfolder, 'html_partial'))
+	os.rmdir_all(html_dir) or {}
+
+	// Ensure t1 coverage data exists
+	if !os.exists(t1) {
+		r := execute('${os.quoted_path(vexe)} -no-skip-unused -coverage ${os.quoted_path(t1)} cmd/tools/vcover/testdata/simple/t1_test.v')
+		assert r.exit_code == 0, r.str()
+	}
+
+	// Generate HTML report
+	r := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t1)} --out ${os.quoted_path(html_dir)} --filter simple/')
+	assert r.exit_code == 0, r.output
+
+	// Check index.html shows partial coverage
+	index := os.read_file(os.join_path(html_dir, 'index.html')) or { '' }
+	assert index.contains('44'), 'should show ~44% coverage'
+	assert index.contains('pct-low'), 'should have red/low color class for <50%'
+	assert index.contains('4 / 9'), 'should show 4/9 lines'
+
+	// Check file HTML has both covered and uncovered lines
+	file_html_path := os.join_path(html_dir, 'files', 'cmd', 'tools', 'vcover', 'testdata',
+		'simple', 'simple.v.html')
+	file_html := os.read_file(file_html_path) or { '' }
+	assert file_html.contains('covered'), 'should have covered lines'
+	assert file_html.contains('uncovered'), 'should have uncovered lines'
 }
 
 fn execute(cmd string) os.Result {

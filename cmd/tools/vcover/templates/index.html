@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>V Coverage Report</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+.container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+h1 { margin: 0 0 20px 0; color: #333; font-size: 24px; }
+h1 a { color: #0066cc; text-decoration: none; }
+h1 a:hover { text-decoration: underline; }
+.summary { display: flex; gap: 30px; margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 6px; }
+.summary-item { display: flex; flex-direction: column; }
+.summary-item .label { font-size: 12px; color: #666; text-transform: uppercase; }
+.summary-item .value { font-size: 24px; font-weight: bold; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; }
+th { background: #f8f9fa; font-weight: 600; color: #333; }
+td.num { text-align: right; font-family: monospace; }
+tr:hover { background: #f8f9fa; }
+tr.no-coverage { opacity: 0.6; }
+a { color: #0066cc; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.pct-high { color: #22863a; }
+.pct-med { color: #b08800; }
+.pct-low { color: #cb2431; }
+.bar-col { width: 150px; }
+.bar { height: 10px; background: #eee; border-radius: 5px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 5px; }
+.bar-fill.pct-high { background: #22863a; }
+.bar-fill.pct-med { background: #b08800; }
+.bar-fill.pct-low { background: #cb2431; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>V Coverage Report</h1>
+<div class="summary">
+<div class="summary-item">
+<span class="label">Overall Coverage:</span>
+<span class="value @pct_class">@overall_pct%</span>
+</div>
+<div class="summary-item">
+<span class="label">Lines:</span>
+<span class="value">@covered_lines / @total_lines</span>
+</div>
+<div class="summary-item">
+<span class="label">Files:</span>
+<span class="value">@file_count</span>
+</div>
+</div>
+<table>
+<thead>
+<tr><th>File</th><th>Covered</th><th>Total</th><th>Coverage</th><th class="bar-col">Bar</th></tr>
+</thead>
+<tbody>
+@file_rows
+</tbody>
+</table>
+</div>
+</body>
+</html>
