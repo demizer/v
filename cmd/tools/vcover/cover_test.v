@@ -55,7 +55,8 @@ fn test_simple() {
 	filter1 := execute(cmd)
 	assert filter1.exit_code == 0, filter1.output
 	assert filter1.output.contains('cmd/tools/vcover/testdata/simple/simple.v'), filter1.output
-	assert filter1.output.trim_space().ends_with('|      4 |      9 |  44.44%'), filter1.output
+	// AST-based counting: 9 covered (with inference) / 16 total code lines = 56.25%
+	assert filter1.output.trim_space().ends_with('|      9 |     16 |  56.25%'), filter1.output
 	lcov_file := np(os.join_path(tfolder, 'coverage', 'simple.lcov'))
 	os.rm(lcov_file) or {}
 	lcov :=
@@ -98,7 +99,8 @@ fn test_simple() {
 		execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t2)} --filter vcover/testdata/simple')
 	assert filter2.exit_code == 0, filter2.output
 	assert filter2.output.contains('cmd/tools/vcover/testdata/simple/simple.v')
-	assert filter2.output.trim_space().ends_with('|      6 |      9 |  66.67%'), filter2.output
+	// AST-based counting: mul() covered instead of sum(), 11 covered / 16 total = 68.75%
+	assert filter2.output.trim_space().ends_with('|     11 |     16 |  68.75%'), filter2.output
 	hfilter2 :=
 		execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t2)} --filter testdata/simple -H -P false')
 	assert hfilter2.exit_code == 0, hfilter2.output
@@ -125,7 +127,8 @@ fn test_simple() {
 	filter3 := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t3)} --filter simple/')
 	assert filter3.exit_code == 0, filter3.str()
 	assert filter3.output.contains('cmd/tools/vcover/testdata/simple/simple.v'), filter3.str()
-	assert filter3.output.trim_space().match_glob('*cmd/tools/vcover/testdata/simple/simple.v *|      9 |      9 | 100.00%'), filter3.str()
+	// AST-based counting: all 16 code lines covered = 100%
+	assert filter3.output.trim_space().match_glob('*cmd/tools/vcover/testdata/simple/simple.v *|     16 |     16 | 100.00%'), filter3.str()
 }
 
 fn test_html_report() {
@@ -153,7 +156,8 @@ fn test_html_report() {
 	assert index.contains('simple.v'), 'should contain file name'
 	assert index.contains('100'), 'should show 100% coverage'
 	assert index.contains('pct-high'), 'should have green color class'
-	assert index.contains('9 / 9'), 'should show 9/9 lines'
+	// AST-based counting: 16 total code lines
+	assert index.contains('16 / 16'), 'should show 16/16 lines'
 
 	// Check individual file report exists
 	file_html_path := os.join_path(html_dir, 'files', 'cmd', 'tools', 'vcover', 'testdata',
@@ -184,9 +188,10 @@ fn test_html_report_partial_coverage() {
 
 	// Check index.html shows partial coverage
 	index := os.read_file(os.join_path(html_dir, 'index.html')) or { '' }
-	assert index.contains('44'), 'should show ~44% coverage'
-	assert index.contains('pct-low'), 'should have red/low color class for <50%'
-	assert index.contains('4 / 9'), 'should show 4/9 lines'
+	// AST-based counting: 9 covered / 16 total = 56.25%
+	assert index.contains('56'), 'should show ~56% coverage'
+	assert index.contains('pct-med'), 'should have medium color class for 50-80%'
+	assert index.contains('9 / 16'), 'should show 9/16 lines'
 
 	// Check file HTML has both covered and uncovered lines
 	file_html_path := os.join_path(html_dir, 'files', 'cmd', 'tools', 'vcover', 'testdata',

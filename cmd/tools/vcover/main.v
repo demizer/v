@@ -106,6 +106,55 @@ fn (mut ctx Context) process_target(tfile string) ! {
 	}
 }
 
+// get_instrumented_lines returns a map of line number -> hit count for a specific file
+fn (ctx &Context) get_instrumented_lines(file string) map[int]u64 {
+	mut result := map[int]u64{}
+	// Get all instrumented lines for this file
+	lines := ctx.all_lines_per_file[file]
+	for line in lines {
+		key := '${file}:${line}:'
+		hits := ctx.counters[key]
+		result[line] = hits
+	}
+	return result
+}
+
+// build_ast_file_coverage builds a FileCoverage using AST analysis for accurate line counting
+fn (ctx &Context) build_ast_file_coverage(file string) FileCoverage {
+	// Get instrumented coverage data for this file
+	instrumented := ctx.get_instrumented_lines(file)
+
+	// Try to build AST-based coverage
+	fc := build_file_coverage(file, instrumented) or {
+		// If AST parsing fails, fall back to basic coverage
+		ctx.verbose('Warning: could not parse ${file} for AST analysis: ${err}')
+		return ctx.build_basic_file_coverage(file)
+	}
+
+	return FileCoverage{
+		...fc
+		path: file
+	}
+}
+
+// build_basic_file_coverage builds a FileCoverage using only instrumented points (fallback)
+fn (ctx &Context) build_basic_file_coverage(file string) FileCoverage {
+	instrumented := ctx.get_instrumented_lines(file)
+	total := instrumented.len
+	mut covered := 0
+	for _, hits in instrumented {
+		if hits > 0 {
+			covered++
+		}
+	}
+	return FileCoverage{
+		path:         file
+		lines:        []
+		total_code:   total
+		covered_code: covered
+	}
+}
+
 fn (mut ctx Context) show_report() ! {
 	filters := ctx.filter.split(',').filter(it != '')
 	if ctx.show_hotspots {
@@ -128,14 +177,14 @@ fn (mut ctx Context) show_report() ! {
 	}
 	if ctx.show_percentages {
 		for file in ctx.sorted_hit_files(filters) {
-			total_lines := ctx.all_lines_per_file[file].len
-			executed_points := ctx.lines_per_file[file].len
-			coverage_percent := 100.0 * f64(executed_points) / f64(total_lines)
+			// Use AST-based coverage for accurate line counting
+			fc := ctx.build_ast_file_coverage(file)
+			coverage_percent := fc.coverage_percentage()
 			mut final_path := normalize_path(file)
 			if !ctx.use_absolute_paths {
 				final_path = file.all_after_first('${ctx.working_folder}/')
 			}
-			println('${final_path:-80s} | ${executed_points:6} | ${total_lines:6} | ${coverage_percent:6.2f}%')
+			println('${final_path:-80s} | ${fc.covered_code:6} | ${fc.total_code:6} | ${coverage_percent:6.2f}%')
 		}
 	}
 	if ctx.lcov_output != '' {

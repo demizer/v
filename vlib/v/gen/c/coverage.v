@@ -42,7 +42,8 @@ fn (mut g Gen) write_coverage_point(pos token.Pos) {
 		g.empty_line = true
 		g.writeln('_v_cov[_v_cov_file_offset_${g.unique_file_path_hash}+${curr_cov.points.len - 1}]++;')
 		g.set_current_pos_as_last_stmt_pos()
-		g.write(stmt_str)
+		// Use writeln to ensure proper line ending after #line directives
+		g.writeln(stmt_str)
 	}
 }
 
