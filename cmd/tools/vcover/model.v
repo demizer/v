@@ -14,6 +14,7 @@ enum LineType {
 	if_closing_brace
 	match_header
 	match_arm
+	match_arm_closing
 	match_closing_brace
 	struct_decl    // struct Foo {
 	struct_field   // field lines inside struct

@@ -176,12 +176,42 @@ fn classify_stmt(stmt ast.Stmt, mut classifications []LineCoverage, mut type_dec
 // classify_fn_decl classifies a function declaration
 fn classify_fn_decl(fn_decl &ast.FnDecl, mut classifications []LineCoverage, mut type_decls []TypeDecl, mut type_usages []TypeUsage, table &ast.Table) {
 	start_line := fn_decl.pos.line_nr + 1
-	end_line := if fn_decl.end_pos.last_line > 0 {
+
+	// Calculate end_line from AST position info first
+	mut end_line := if fn_decl.end_pos.last_line > 0 {
 		fn_decl.end_pos.last_line + 1
 	} else if fn_decl.pos.last_line > 0 {
 		fn_decl.pos.last_line + 1
 	} else {
 		start_line
+	}
+
+	// If end_line equals start_line (single-line or fallback), try to calculate from body
+	if end_line == start_line && fn_decl.stmts.len > 0 {
+		last_stmt := fn_decl.stmts.last()
+		stmt_end := last_stmt.pos.last_line + 1
+		if stmt_end > start_line {
+			end_line = stmt_end + 1 // +1 for closing brace
+		}
+	}
+
+	// Recursively classify body statements first to detect nested structures
+	for stmt in fn_decl.stmts {
+		classify_stmt(stmt, mut classifications, mut type_decls, mut type_usages, table)
+	}
+
+	// After classifying body, find the actual closing brace line
+	// by looking for the first unclassified line after the last body statement
+	if fn_decl.stmts.len > 0 {
+		last_stmt := fn_decl.stmts.last()
+		stmt_end := last_stmt.pos.last_line + 1
+		// Scan forward to find the function's closing brace
+		for i in (stmt_end + 1) .. classifications.len {
+			if classifications[i].line_type == .blank {
+				end_line = i
+				break
+			}
+		}
 	}
 
 	// Mark signature line(s)
@@ -194,11 +224,6 @@ fn classify_fn_decl(fn_decl &ast.FnDecl, mut classifications []LineCoverage, mut
 	if end_line > 0 && end_line < classifications.len && end_line != start_line {
 		classifications[end_line].line_type = .fn_closing_brace
 		classifications[end_line].block_start = start_line
-	}
-
-	// Recursively classify body statements
-	for stmt in fn_decl.stmts {
-		classify_stmt(stmt, mut classifications, mut type_decls, mut type_usages, table)
 	}
 }
 
@@ -490,32 +515,41 @@ fn classify_if_expr(if_expr &ast.IfExpr, mut classifications []LineCoverage, mut
 fn classify_match_expr(match_expr &ast.MatchExpr, mut classifications []LineCoverage, mut type_decls []TypeDecl, mut type_usages []TypeUsage, table &ast.Table) {
 	start_line := match_expr.pos.line_nr + 1
 
-	// Find overall end
-	mut end_line := start_line
-	if match_expr.branches.len > 0 {
-		last_branch := match_expr.branches.last()
-		if last_branch.stmts.len > 0 {
-			last_stmt := last_branch.stmts.last()
-			end_line = last_stmt.pos.last_line + 2
-		}
-	}
-
-	// Mark match header
-	if start_line > 0 && start_line < classifications.len {
-		classifications[start_line].line_type = .match_header
-		classifications[start_line].block_end = end_line
-	}
-
 	// Check matched expression for type usages
 	collect_type_usages(match_expr.cond, mut type_usages, table)
+
+	// Track the last arm's closing brace line to find the match closing brace
+	mut last_arm_end := start_line
 
 	// Classify each branch
 	for branch in match_expr.branches {
 		branch_line := branch.pos.line_nr + 1
 
-		// Mark branch arm
+		// Find end line of this arm
+		mut arm_end := branch_line
+		if branch.stmts.len > 0 {
+			last_stmt := branch.stmts.last()
+			stmt_end := last_stmt.pos.last_line + 1
+			if stmt_end > arm_end {
+				arm_end = stmt_end + 1 // +1 for closing brace
+			}
+		}
+
+		// Track the furthest arm end
+		if arm_end > last_arm_end {
+			last_arm_end = arm_end
+		}
+
+		// Mark branch arm header
 		if branch_line > 0 && branch_line < classifications.len {
 			classifications[branch_line].line_type = .match_arm
+			classifications[branch_line].block_end = arm_end
+		}
+
+		// Mark arm closing brace
+		if arm_end > 0 && arm_end < classifications.len && arm_end != branch_line {
+			classifications[arm_end].line_type = .match_arm_closing
+			classifications[arm_end].block_start = branch_line
 		}
 
 		// Check branch expressions for type usages
@@ -530,12 +564,19 @@ fn classify_match_expr(match_expr &ast.MatchExpr, mut classifications []LineCove
 		}
 	}
 
-	// Mark closing brace
+	// Match closing brace is one line after the last arm's closing brace
+	end_line := last_arm_end + 1
+
+	// Mark match header with correct end_line
+	if start_line > 0 && start_line < classifications.len {
+		classifications[start_line].line_type = .match_header
+		classifications[start_line].block_end = end_line
+	}
+
+	// Mark match closing brace
 	if end_line > 0 && end_line < classifications.len && end_line != start_line {
-		if classifications[end_line].line_type == .blank {
-			classifications[end_line].line_type = .match_closing_brace
-			classifications[end_line].block_start = start_line
-		}
+		classifications[end_line].line_type = .match_closing_brace
+		classifications[end_line].block_start = start_line
 	}
 }
 

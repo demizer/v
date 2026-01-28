@@ -118,19 +118,34 @@ fn infer_coverage(analysis AstAnalysis, instrumented map[int]u64) FileCoverage {
 				// Match arm coverage comes from instrumentation
 				// If not already covered by instrumentation, check body
 				if lines[i].status != .covered {
-					// Find next match arm or closing brace to determine arm range
-					mut arm_end := i + 1
-					for j in (i + 1) .. lines.len {
-						if lines[j].line_type == .match_arm
-							|| lines[j].line_type == .match_closing_brace {
-							arm_end = j - 1
-							break
+					// Use block_end if available, otherwise find next arm/closing brace
+					mut arm_end := lines[i].block_end
+					if arm_end == 0 {
+						arm_end = i + 1
+						for j in (i + 1) .. lines.len {
+							if lines[j].line_type == .match_arm
+								|| lines[j].line_type == .match_closing_brace {
+								arm_end = j - 1
+								break
+							}
 						}
 					}
-					if any_covered_in_range(lines, i + 1, arm_end) {
+					if any_covered_in_range(lines, i + 1, arm_end - 1) {
 						lines[i].status = .covered
 						lines[i].source = .inferred
-					} else if has_any_code_in_range(lines, i + 1, arm_end) {
+					} else if has_any_code_in_range(lines, i + 1, arm_end - 1) {
+						lines[i].status = .uncovered
+					}
+				}
+			}
+			.match_arm_closing {
+				// Arm closing brace inherits from its arm header
+				opener := lines[i].block_start
+				if opener > 0 && opener < lines.len {
+					if lines[opener].status == .covered {
+						lines[i].status = .covered
+						lines[i].source = .inferred
+					} else if lines[opener].status == .uncovered {
 						lines[i].status = .uncovered
 					}
 				}
@@ -162,6 +177,56 @@ fn infer_coverage(analysis AstAnalysis, instrumented map[int]u64) FileCoverage {
 			// For now, mark as uncovered if it's actual code
 			if lines[i].source == .not_available {
 				lines[i].status = .uncovered
+			}
+		}
+	}
+
+	// Fifth pass: Propagate coverage to comments and blank lines for visual coloring
+	// They inherit coverage status from surrounding code (doesn't affect counts)
+	// Only color those inside function bodies, not at file scope
+	for i in 1 .. lines.len {
+		if lines[i].line_type == .comment || lines[i].line_type == .blank {
+			// Check if this line is at file scope by looking at surrounding context
+			// Find the previous non-comment, non-blank line
+			mut prev_type := LineType.blank
+			for j := i - 1; j >= 1; j-- {
+				if lines[j].line_type != .comment && lines[j].line_type != .blank {
+					prev_type = lines[j].line_type
+					break
+				}
+			}
+
+			// Skip file-scope lines: those after closing braces of top-level constructs
+			// or at the start of the file (before any code)
+			if prev_type == .fn_closing_brace || prev_type == .struct_closing
+				|| prev_type == .enum_closing || prev_type == .other || prev_type == .blank {
+				continue
+			}
+
+			// Look for nearest non-comment, non-blank line with coverage info
+			// First check previous lines
+			mut found := false
+			for j := i - 1; j >= 1; j-- {
+				if lines[j].line_type != .comment && lines[j].line_type != .blank {
+					if lines[j].status == .covered || lines[j].status == .uncovered {
+						lines[i].status = lines[j].status
+						lines[i].source = .inferred
+						found = true
+					}
+					break
+				}
+			}
+			// If not found, check next lines
+			if !found {
+				for j in (i + 1) .. lines.len {
+					if lines[j].line_type != .comment && lines[j].line_type != .blank {
+						if lines[j].status == .covered || lines[j].status == .uncovered {
+							lines[i].status = lines[j].status
+							lines[i].source = .inferred
+						}
+						break
+					}
+				}
 			}
 		}
 	}
