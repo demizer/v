@@ -68,10 +68,13 @@ struct FileCoverage {
 
 // TypeDecl tracks a struct or enum declaration
 struct TypeDecl {
-	name       string // fully qualified name (module.TypeName)
-	kind       string // 'struct' or 'enum'
-	start_line int    // declaration start (1-indexed)
-	end_line   int    // declaration end - closing brace (1-indexed)
+	name           string            // fully qualified name (module.TypeName)
+	kind           string            // 'struct' or 'enum'
+	start_line     int               // declaration start (1-indexed)
+	end_line       int               // declaration end - closing brace (1-indexed)
+	field_types    []string          // names of struct/enum types used in fields
+	fields         map[string]int    // field name -> declaration line (1-indexed)
+	field_type_map map[string]string // field name -> type name (for chained access tracking)
 }
 
 // TypeUsage tracks where a struct is instantiated or enum value is used
@@ -80,12 +83,20 @@ struct TypeUsage {
 	line      int    // line where instantiation/usage occurs (1-indexed)
 }
 
+// FieldUsage tracks where a struct field is accessed
+struct FieldUsage {
+	struct_name string // fully qualified struct name
+	field_name  string // field name being accessed
+	line        int    // line where access occurs (1-indexed)
+}
+
 // AstAnalysis holds the results of analyzing a source file's AST
 struct AstAnalysis {
 	num_lines       int            // total lines in the file
 	classifications []LineCoverage // line-by-line classification (1-indexed)
 	type_decls      []TypeDecl     // struct/enum declarations found
 	type_usages     []TypeUsage    // struct instantiations, enum value usages
+	field_usages    []FieldUsage   // struct field accesses
 }
 
 // coverage_percentage calculates the coverage percentage for a FileCoverage

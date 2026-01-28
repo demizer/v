@@ -111,19 +111,23 @@ fn infer_coverage(analysis AstAnalysis, instrumented map[int]u64) FileCoverage {
 				}
 			}
 			.match_header {
-				// Match header is covered if ANY arm has hits
-				end := lines[i].block_end
-				if any_covered_in_range(lines, i + 1, end - 1) {
-					lines[i].status = .covered
-					lines[i].source = .inferred
-				} else if has_any_code_in_range(lines, i + 1, end - 1) {
-					lines[i].status = .uncovered
+				// Match header with instrumented hits keeps instrumented source
+				// Only infer if no instrumented data is available
+				if lines[i].source != .instrumented {
+					// Match header is covered if ANY arm has hits
+					end := lines[i].block_end
+					if any_covered_in_range(lines, i + 1, end - 1) {
+						lines[i].status = .covered
+						lines[i].source = .inferred
+					} else if has_any_code_in_range(lines, i + 1, end - 1) {
+						lines[i].status = .uncovered
+					}
 				}
 			}
 			.match_arm {
-				// Match arm coverage comes from instrumentation
-				// If not already covered by instrumentation, check body
-				if lines[i].status != .covered {
+				// Match arm coverage comes from instrumentation (commit 509e1a374)
+				// Only infer if no instrumented data is available
+				if lines[i].source != .instrumented {
 					// Use block_end if available, otherwise find next arm/closing brace
 					mut arm_end := lines[i].block_end
 					if arm_end == 0 {
@@ -172,8 +176,9 @@ fn infer_coverage(analysis AstAnalysis, instrumented map[int]u64) FileCoverage {
 		}
 	}
 
-	// Third pass: Apply type coverage
-	mark_type_coverage(mut lines, analysis.type_decls, analysis.type_usages, instrumented)
+	// Third pass: Apply type coverage (with field type propagation and field hit counting)
+	mark_type_coverage(mut lines, analysis.type_decls, analysis.type_usages, analysis.field_usages,
+		instrumented)
 
 	// Fourth pass: Mark remaining code lines without coverage data
 	for i in 1 .. lines.len {
@@ -190,8 +195,14 @@ fn infer_coverage(analysis AstAnalysis, instrumented map[int]u64) FileCoverage {
 	// Fifth pass: Propagate coverage to comments and blank lines for visual coloring
 	// They inherit coverage status from surrounding code (doesn't affect counts)
 	// Only color those inside function bodies, not at file scope
+	// IMPORTANT: Skip lines that already have instrumented data (e.g., or_block statements)
 	for i in 1 .. lines.len {
 		if lines[i].line_type == .comment || lines[i].line_type == .blank {
+			// Skip lines that already have instrumented coverage data
+			if lines[i].source == .instrumented {
+				continue
+			}
+
 			// Check if this line is at file scope by looking at surrounding context
 			// Find the previous non-comment, non-blank line
 			mut prev_type := LineType.blank
@@ -282,14 +293,48 @@ fn has_any_code_in_range(lines []LineCoverage, start int, end int) bool {
 }
 
 // mark_type_coverage marks struct/enum declarations as covered if their usages are on covered lines
-fn mark_type_coverage(mut lines []LineCoverage, type_decls []TypeDecl, type_usages []TypeUsage, instrumented map[int]u64) {
+fn mark_type_coverage(mut lines []LineCoverage, type_decls []TypeDecl, type_usages []TypeUsage, field_usages []FieldUsage, instrumented map[int]u64) {
 	// Build a map of type name -> whether it's used on a covered line
 	mut type_covered := map[string]bool{}
 
+	// Pass 1: Mark types covered by direct usage (instantiation, generic calls, etc.)
 	for usage in type_usages {
 		// Check if this usage line is covered
 		if usage.line in instrumented && instrumented[usage.line] > 0 {
 			type_covered[usage.type_name] = true
+		}
+	}
+
+	// Build a map of type name -> TypeDecl for propagation
+	mut decl_map := map[string]TypeDecl{}
+	for decl in type_decls {
+		decl_map[decl.name] = decl
+	}
+
+	// Pass 2: Propagate coverage through field types (iterate until stable)
+	// If a struct is covered and has a field of another struct type, that type is also covered
+	mut changed := true
+	for changed {
+		changed = false
+		for decl in type_decls {
+			if type_covered[decl.name] {
+				for field_type in decl.field_types {
+					if !type_covered[field_type] {
+						type_covered[field_type] = true
+						changed = true
+					}
+				}
+			}
+		}
+	}
+
+	// Pass 3: Count field access hits
+	// Build map of (struct_name, field_name) -> total hits on covered lines
+	mut field_hits := map[string]u64{}
+	for usage in field_usages {
+		if usage.line in instrumented && instrumented[usage.line] > 0 {
+			key := '${usage.struct_name}.${usage.field_name}'
+			field_hits[key] = field_hits[key] + instrumented[usage.line]
 		}
 	}
 
@@ -309,6 +354,16 @@ fn mark_type_coverage(mut lines []LineCoverage, type_decls []TypeDecl, type_usag
 					} else {
 						lines[i].status = .uncovered
 					}
+				}
+			}
+		}
+
+		// Apply field hits to field declaration lines
+		for field_name, field_line in decl.fields {
+			key := '${decl.name}.${field_name}'
+			if hits := field_hits[key] {
+				if field_line > 0 && field_line < lines.len {
+					lines[field_line].hits = hits
 				}
 			}
 		}

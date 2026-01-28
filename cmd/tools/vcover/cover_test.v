@@ -215,6 +215,7 @@ fn test_match_arm_closing_braces_and_comments() {
 	mut found_file_scope_comment_uncolored := false
 	mut found_blank_line_in_covered := false
 	mut found_file_scope_blank_uncolored := false
+	mut found_match_arm_instrumented_hits := false // Check match arm has real hits not ~
 
 	for line in lines {
 		// Track div class
@@ -265,6 +266,12 @@ fn test_match_arm_closing_braces_and_comments() {
 		if line.contains('line-num">25<') && current_class == '' {
 			found_file_scope_blank_uncolored = true
 		}
+
+		// Check that covered match arm (line 7: 'one' {) has instrumented hits (1x not ~1x)
+		// This verifies commit 509e1a374 match arm line coverage is preserved
+		if line.contains('hits">1x<') && current_class == 'covered' {
+			found_match_arm_instrumented_hits = true
+		}
 	}
 
 	assert found_covered_arm_closing, 'Closing brace of covered arm should be marked covered'
@@ -274,6 +281,7 @@ fn test_match_arm_closing_braces_and_comments() {
 	assert found_file_scope_comment_uncolored, 'File-scope doc comments should NOT be colored'
 	assert found_blank_line_in_covered, 'Blank lines inside covered code should be marked covered'
 	assert found_file_scope_blank_uncolored, 'File-scope blank lines should NOT be colored'
+	assert found_match_arm_instrumented_hits, 'Match arm should show instrumented hits (1x) not inferred (~)'
 }
 
 fn test_if_statement_coverage() {
@@ -333,6 +341,185 @@ fn test_if_statement_coverage() {
 	assert found_if_header_covered, 'If header with hits should be marked covered'
 	assert found_if_body_uncovered, 'If body that was never executed should be uncovered'
 	assert found_if_closing_covered, 'If closing brace should inherit covered from header'
+}
+
+fn test_struct_coverage_propagation() {
+	// Test that structs used as field types are marked as covered when their containing struct is used
+	t_struct := np(os.join_path(tfolder, 't_struct'))
+	os.rmdir_all(t_struct) or {}
+
+	html_dir := np(os.join_path(tfolder, 'html_struct'))
+	os.rmdir_all(html_dir) or {}
+
+	// Run test to generate coverage data
+	r := execute('${os.quoted_path(vexe)} -no-skip-unused -cov-data-dir ${os.quoted_path(t_struct)} test cmd/tools/vcover/testdata/structtest/')
+	assert r.exit_code == 0, r.str()
+	assert os.exists(t_struct), t_struct
+
+	// Generate HTML report
+	r2 := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t_struct)} --out ${os.quoted_path(html_dir)} --filter structtest/')
+	assert r2.exit_code == 0, r2.output
+
+	// Check file HTML
+	file_html_path := os.join_path(html_dir, 'files', 'cmd', 'tools', 'vcover', 'testdata',
+		'structtest', 'struct_types.v.html')
+	file_html := os.read_file(file_html_path) or { '' }
+
+	lines := file_html.split_into_lines()
+	mut current_class := ''
+	mut inner_struct_covered := false
+	mut outer_struct_covered := false
+	mut unused_struct_uncovered := false
+
+	for line in lines {
+		// Track div class
+		if line.contains('<div class="line ') {
+			if line.contains('covered') && !line.contains('uncovered') {
+				current_class = 'covered'
+			} else if line.contains('uncovered') {
+				current_class = 'uncovered'
+			} else {
+				current_class = ''
+			}
+		}
+
+		// Line 4: Inner struct declaration should be covered (used as field type in Outer)
+		if line.contains('line-num">4<') && current_class == 'covered' {
+			inner_struct_covered = true
+		}
+
+		// Line 9: Outer struct declaration should be covered (instantiated)
+		if line.contains('line-num">9<') && current_class == 'covered' {
+			outer_struct_covered = true
+		}
+
+		// Line 16: Unused struct declaration should be uncovered
+		if line.contains('line-num">16<') && current_class == 'uncovered' {
+			unused_struct_uncovered = true
+		}
+	}
+
+	assert inner_struct_covered, 'Inner struct used as field type should be marked covered'
+	assert outer_struct_covered, 'Outer struct that is instantiated should be marked covered'
+	assert unused_struct_uncovered, 'Unused struct should be marked uncovered'
+}
+
+fn test_return_match_arm_instrumentation() {
+	// Test that single-line match arms in return statements have instrumented hits (not inferred)
+	t_returnmatch := np(os.join_path(tfolder, 't_returnmatch'))
+	os.rmdir_all(t_returnmatch) or {}
+
+	html_dir := np(os.join_path(tfolder, 'html_returnmatch'))
+	os.rmdir_all(html_dir) or {}
+
+	// Run test to generate coverage data
+	r := execute('${os.quoted_path(vexe)} -no-skip-unused -cov-data-dir ${os.quoted_path(t_returnmatch)} test cmd/tools/vcover/testdata/returnmatch/')
+	assert r.exit_code == 0, r.str()
+	assert os.exists(t_returnmatch), t_returnmatch
+
+	// Generate HTML report
+	r2 := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t_returnmatch)} --out ${os.quoted_path(html_dir)} --filter returnmatch/')
+	assert r2.exit_code == 0, r2.output
+
+	// Check file HTML
+	file_html_path := os.join_path(html_dir, 'files', 'cmd', 'tools', 'vcover', 'testdata',
+		'returnmatch', 'return_match.v.html')
+	file_html := os.read_file(file_html_path) or { '' }
+
+	lines := file_html.split_into_lines()
+	mut found_yes_no_instrumented := false
+	mut found_ok_instrumented := false
+
+	for i, line in lines {
+		// Line 15 (.yes_no arm) should show 1x (instrumented) not ~1x (inferred)
+		if line.contains('line-num">15<') {
+			if i + 1 < lines.len {
+				hits_line := lines[i + 1]
+				// Should be exactly "1x" not "~1x"
+				if hits_line.contains('hits">1x<') {
+					found_yes_no_instrumented = true
+				}
+			}
+		}
+
+		// Line 13 (.ok arm) should show 0x (instrumented with 0 hits) not ~ (inferred)
+		if line.contains('line-num">13<') {
+			if i + 1 < lines.len {
+				hits_line := lines[i + 1]
+				// Should be exactly "0x" not "~"
+				if hits_line.contains('hits">0x<') {
+					found_ok_instrumented = true
+				}
+			}
+		}
+	}
+
+	assert found_yes_no_instrumented, 'Match arm .yes_no should show instrumented hits (1x) not inferred (~1x)'
+	assert found_ok_instrumented, 'Match arm .ok should show instrumented 0x not inferred ~'
+}
+
+fn test_field_access_hit_counting() {
+	// Test that struct field accesses are tracked and show inferred hits (~nx)
+	t_fieldtest := np(os.join_path(tfolder, 't_fieldtest'))
+	os.rmdir_all(t_fieldtest) or {}
+
+	html_dir := np(os.join_path(tfolder, 'html_fieldtest'))
+	os.rmdir_all(html_dir) or {}
+
+	// Run test to generate coverage data
+	r := execute('${os.quoted_path(vexe)} -no-skip-unused -cov-data-dir ${os.quoted_path(t_fieldtest)} test cmd/tools/vcover/testdata/fieldtest/')
+	assert r.exit_code == 0, r.str()
+	assert os.exists(t_fieldtest), t_fieldtest
+
+	// Generate HTML report
+	r2 := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t_fieldtest)} --out ${os.quoted_path(html_dir)} --filter fieldtest/')
+	assert r2.exit_code == 0, r2.output
+
+	// Check file HTML
+	file_html_path := os.join_path(html_dir, 'files', 'cmd', 'tools', 'vcover', 'testdata',
+		'fieldtest', 'field_types.v.html')
+	file_html := os.read_file(file_html_path) or { '' }
+
+	lines := file_html.split_into_lines()
+	mut found_value_field_hit := false
+	mut found_inner_field_hit := false
+	mut found_count_field_hit := false
+
+	for i, line in lines {
+		// Line 4 (value int) should show ~1x (inferred field access)
+		if line.contains('line-num">4<') {
+			if i + 1 < lines.len {
+				hits_line := lines[i + 1]
+				if hits_line.contains('hits">~1x<') {
+					found_value_field_hit = true
+				}
+			}
+		}
+
+		// Line 9 (inner Inner) should show ~1x (inferred field access)
+		if line.contains('line-num">9<') {
+			if i + 1 < lines.len {
+				hits_line := lines[i + 1]
+				if hits_line.contains('hits">~1x<') {
+					found_inner_field_hit = true
+				}
+			}
+		}
+
+		// Line 10 (count int) should show ~1x (inferred field access)
+		if line.contains('line-num">10<') {
+			if i + 1 < lines.len {
+				hits_line := lines[i + 1]
+				if hits_line.contains('hits">~1x<') {
+					found_count_field_hit = true
+				}
+			}
+		}
+	}
+
+	assert found_value_field_hit, 'Field Inner.value should show inferred hit (~1x)'
+	assert found_inner_field_hit, 'Field Outer.inner should show inferred hit (~1x)'
+	assert found_count_field_hit, 'Field Outer.count should show inferred hit (~1x)'
 }
 
 fn execute(cmd string) os.Result {
