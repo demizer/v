@@ -4,6 +4,7 @@
 module main
 
 import os
+import v.highlight
 
 // generate_html_report creates HTML coverage report in the specified directory.
 fn (ctx &Context) generate_html_report() ! {
@@ -60,9 +61,15 @@ fn (ctx &Context) generate_html_report() ! {
 	html := $tmpl('templates/index.html')
 	os.write_file('${ctx.out_dir}/index.html', html)!
 
-	// Copy veasel image to output directory
+	// Copy assets to output directory
 	veasel_data := $embed_file('../../../examples/vweb_fullstack/src/assets/veasel.png')
 	os.write_bytes('${ctx.out_dir}/veasel.png', veasel_data.to_bytes())!
+	favicon_data := $embed_file('../vdoc/theme/favicons/favicon.ico')
+	os.write_bytes('${ctx.out_dir}/favicon.ico', favicon_data.to_bytes())!
+	common_css := $embed_file('templates/common.css')
+	os.write_file('${ctx.out_dir}/common.css', common_css.to_string())!
+	common_js := $embed_file('templates/common.js')
+	os.write_file('${ctx.out_dir}/common.js', common_js.to_string())!
 
 	ctx.verbose('HTML report generated in ${ctx.out_dir}')
 }
@@ -121,7 +128,11 @@ fn (ctx &Context) generate_file_html_with_coverage(file string, fc FileCoverage)
 	for _ in 0 .. depth {
 		back_parts << '../'
 	}
-	back_path := back_parts.join('') + 'index.html'
+	root_path := back_parts.join('').trim_right('/')
+	back_path := root_path + '/index.html'
+	favicon_path := root_path + '/favicon.ico'
+	_ = favicon_path
+	_ = root_path
 
 	// Control hits column visibility (used in template)
 	hits_display := if ctx.show_hits { '' } else { 'display: none;' }
@@ -151,7 +162,7 @@ fn (ctx &Context) generate_file_html_with_coverage(file string, fc FileCoverage)
 }
 
 fn render_source_line(line_num int, line string, hits u64, is_instrumented bool) string {
-	code := html_escape(line)
+	code := highlight.v_html_simple(line)
 	line_class := if is_instrumented {
 		if hits > 0 { 'covered' } else { 'uncovered' }
 	} else {
@@ -167,7 +178,7 @@ fn render_source_line(line_num int, line string, hits u64, is_instrumented bool)
 }
 
 fn render_source_line_with_coverage(line_num int, line string, lc LineCoverage) string {
-	code := html_escape(line)
+	code := highlight.v_html_simple(line)
 
 	// Determine line class based on coverage status
 	line_class := match lc.status {
@@ -193,7 +204,7 @@ fn render_source_line_with_coverage(line_num int, line string, lc LineCoverage) 
 }
 
 fn render_source_line_basic(line_num int, line string) string {
-	code := html_escape(line)
+	code := highlight.v_html_simple(line)
 	line_class := ''
 	hits_str := ''
 	return $tmpl('templates/source_line.html')
@@ -211,8 +222,4 @@ fn get_pct_class(covered int, total int) string {
 	} else {
 		'pct-low'
 	}
-}
-
-fn html_escape(s string) string {
-	return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 }

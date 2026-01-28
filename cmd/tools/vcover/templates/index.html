@@ -3,39 +3,30 @@
 <head>
 <meta charset="UTF-8">
 <title>V Coverage Report</title>
+<link rel="icon" type="image/x-icon" href="favicon.ico">
+<link rel="stylesheet" href="common.css">
+<script src="common.js"></script>
 <style>
-* { box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-.container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-.header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
-h1 { margin: 0; color: #333; font-size: 24px; }
-h1 a { color: #0066cc; text-decoration: none; }
-h1 a:hover { text-decoration: underline; }
-.veasel { height: 40px; }
-.summary { display: flex; gap: 30px; margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 6px; }
+/* Index page specific styles */
+.summary { display: flex; gap: 30px; margin-bottom: 20px; padding: 15px; background: var(--summary-bg); border-radius: 6px; }
 .summary-item { display: flex; flex-direction: column; }
-.summary-item .label { font-size: 12px; color: #666; text-transform: uppercase; }
+.summary-item .label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; }
 .summary-item .value { font-size: 24px; font-weight: bold; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
-th, td { padding: 10px 12px; text-align: center; border-bottom: 1px solid #e0e0e0; }
-th { background: #e8eef4; font-weight: 600; color: #333; cursor: pointer; user-select: none; position: sticky; top: 0; }
-th:hover { background: #dde5ed; }
-th.sorted-asc::after { content: " ▲"; font-size: 10px; }
-th.sorted-desc::after { content: " ▼"; font-size: 10px; }
+th, td { padding: 10px 12px; text-align: center; border-bottom: 1px solid var(--border-color); }
+th { background: var(--th-bg); font-weight: 600; cursor: pointer; user-select: none; position: sticky; top: 0; }
+th:hover { background: var(--th-hover); }
+th.sorted-asc::after { content: " \25B2"; font-size: 10px; }
+th.sorted-desc::after { content: " \25BC"; font-size: 10px; }
 th:first-child { width: 50%; text-align: left; }
 td:first-child { text-align: left; }
 td.num { text-align: center; font-family: monospace; }
-tbody tr:nth-child(odd) { background: #fafbfc; }
-tbody tr:nth-child(even) { background: #ffffff; }
-tbody tr:hover { background: #f0f4f8; }
+tbody tr:nth-child(odd) { background: var(--row-odd); }
+tbody tr:nth-child(even) { background: var(--row-even); }
+tbody tr:hover { background: var(--row-hover); }
 tr.no-coverage { opacity: 0.6; }
-a { color: #0066cc; text-decoration: none; }
-a:hover { text-decoration: underline; }
-.pct-high { color: #22863a; }
-.pct-med { color: #b08800; }
-.pct-low { color: #cb2431; }
 .bar-col { width: 120px; }
-.bar { height: 10px; background: #e0e0e0; border-radius: 5px; overflow: hidden; }
+.bar { height: 10px; background: var(--bar-bg); border-radius: 5px; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 5px; }
 .bar-fill.pct-high { background: #22863a; }
 .bar-fill.pct-med { background: #b08800; }
@@ -45,8 +36,12 @@ a:hover { text-decoration: underline; }
 <body>
 <div class="container">
 <div class="header">
-<h1>V Coverage Report</h1>
 <img src="veasel.png" alt="V" class="veasel">
+<h1>V Coverage Report</h1>
+<button class="theme-toggle" onclick="toggleDark()" title="Toggle dark mode">
+<svg class="sun-icon" viewBox="0 0 24 24"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8-5c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm-1 16.95h2V19.5h-2v2.95zm-7.45-3.91l1.41 1.41 1.79-1.8-1.41-1.41-1.79 1.8z"/></svg>
+<svg class="moon-icon" viewBox="0 0 24 24"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/></svg>
+</button>
 </div>
 <div class="summary">
 <div class="summary-item">
@@ -82,45 +77,28 @@ a:hover { text-decoration: underline; }
     const table = document.getElementById('coverage-table');
     const headers = table.querySelectorAll('th[data-sort]');
     let currentSort = { col: 0, dir: 'asc' };
-
     function sortTable(colIndex, type) {
         const tbody = table.querySelector('tbody');
         const rows = Array.from(tbody.querySelectorAll('tr'));
         const dir = currentSort.col === colIndex && currentSort.dir === 'asc' ? 'desc' : 'asc';
-
         rows.sort((a, b) => {
             let aVal = a.cells[colIndex].textContent.trim();
             let bVal = b.cells[colIndex].textContent.trim();
-
             if (type === 'number') {
                 aVal = parseFloat(aVal.replace('%', '')) || 0;
                 bVal = parseFloat(bVal.replace('%', '')) || 0;
             }
-
-            if (dir === 'asc') {
-                return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
-            } else {
-                return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
-            }
+            return dir === 'asc' ? (aVal > bVal ? 1 : aVal < bVal ? -1 : 0) : (aVal < bVal ? 1 : aVal > bVal ? -1 : 0);
         });
-
-        // Update header classes
         headers.forEach((h, i) => {
             h.classList.remove('sorted-asc', 'sorted-desc');
-            if (i === colIndex) {
-                h.classList.add(dir === 'asc' ? 'sorted-asc' : 'sorted-desc');
-            }
+            if (i === colIndex) h.classList.add(dir === 'asc' ? 'sorted-asc' : 'sorted-desc');
         });
-
-        // Reorder rows
         rows.forEach(row => tbody.appendChild(row));
         currentSort = { col: colIndex, dir: dir };
     }
-
     headers.forEach((header, index) => {
-        header.addEventListener('click', () => {
-            sortTable(index, header.dataset.sort);
-        });
+        header.addEventListener('click', () => sortTable(index, header.dataset.sort));
     });
 })();
 </script>

@@ -1,0 +1,95 @@
+/* V Coverage Report - Common Styles */
+:root {
+--bg-color: #fff;
+--container-bg: #fff;
+--text-color: #000;
+--text-muted: #616161;
+--link-color: #2779bd;
+--border-color: #dae1e7;
+--th-bg: #edf2f7;
+--th-hover: #e2e8f0;
+--row-odd: #fff;
+--row-even: #f7fafc;
+--row-hover: #edf2f7;
+--summary-bg: #edf2f7;
+--bar-bg: #dae1e7;
+--line-border: #f1f5f8;
+--gutter-bg: #edf2f7;
+--gutter-text: #616161;
+--covered-bg: #c6f6d5;
+--uncovered-bg: #fed7d7;
+/* Syntax highlighting - vdoc light */
+--tok-comment: #93a1a1;
+--tok-punctuation: #696969;
+--tok-number: #702459;
+--tok-string: #219321;
+--tok-builtin: #219321;
+--tok-operator: #864f29;
+--tok-keyword: #2b6cb0;
+--tok-function: #288341;
+--tok-symbol: #702459;
+}
+html.dark {
+--bg-color: #1a202c;
+--container-bg: #2d3748;
+--text-color: #fff;
+--text-muted: #a0aec0;
+--link-color: #90cdf4;
+--border-color: #4a5568;
+--th-bg: #4a5568;
+--th-hover: #5a6578;
+--row-odd: #2d3748;
+--row-even: #323d4d;
+--row-hover: #3d4a5c;
+--summary-bg: #4a5568;
+--bar-bg: #4a5568;
+--line-border: #3d4a5c;
+--gutter-bg: #4a5568;
+--gutter-text: #a0aec0;
+--covered-bg: #276749;
+--uncovered-bg: #9b2c2c;
+/* Syntax highlighting - vdoc dark */
+--tok-comment: #a0aec0;
+--tok-punctuation: #a0aec0;
+--tok-number: #ed64a6;
+--tok-string: #68d391;
+--tok-builtin: #68d391;
+--tok-operator: #a67f59;
+--tok-keyword: #63b3ed;
+--tok-function: #4fd1c5;
+--tok-symbol: #ed64a6;
+}
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; background: var(--bg-color); color: var(--text-color); }
+.container { max-width: 1200px; margin: 0 auto; background: var(--container-bg); padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.veasel { height: 40px; }
+h1 { margin: 0; flex: 1; font-size: 24px; }
+h1 a { color: var(--link-color); text-decoration: none; }
+h1 a:hover { text-decoration: underline; }
+a { color: var(--link-color); text-decoration: none; }
+a:hover { text-decoration: underline; }
+/* Theme toggle */
+.theme-toggle { background: none; border: none; cursor: pointer; padding: 8px; border-radius: 6px; display: flex; align-items: center; }
+.theme-toggle:hover { background: var(--summary-bg); }
+.theme-toggle svg { width: 20px; height: 20px; fill: var(--text-color); }
+html.dark .sun-icon { display: none; }
+html.dark .moon-icon { display: inline; }
+html:not(.dark) .sun-icon { display: inline; }
+html:not(.dark) .moon-icon { display: none; }
+/* Coverage colors */
+.pct-high { color: #22863a; }
+.pct-med { color: #b08800; }
+.pct-low { color: #cb2431; }
+html.dark .pct-high { color: #68d391; }
+html.dark .pct-med { color: #ecc94b; }
+html.dark .pct-low { color: #fc8181; }
+/* Syntax highlighting */
+.tok-comment { color: var(--tok-comment); font-style: italic; }
+.tok-punctuation { color: var(--tok-punctuation); }
+.tok-number, .tok-symbol { color: var(--tok-number); }
+.tok-string, .tok-char { color: var(--tok-string); }
+.tok-builtin { color: var(--tok-builtin); }
+.tok-operator { color: var(--tok-operator); }
+.tok-boolean, .tok-keyword { color: var(--tok-keyword); font-weight: 500; }
+.tok-function { color: var(--tok-function); }
