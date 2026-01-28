@@ -117,7 +117,7 @@ fn classify_stmt(stmt ast.Stmt, mut classifications []LineCoverage, mut type_dec
 					classifications[line].line_type = .code
 				}
 			}
-			// Check for match/if expressions in return and classify their branches
+			// Check for match/if/call expressions in return and classify their branches
 			for expr in stmt.exprs {
 				match expr {
 					ast.MatchExpr {
@@ -126,6 +126,10 @@ fn classify_stmt(stmt ast.Stmt, mut classifications []LineCoverage, mut type_dec
 					}
 					ast.IfExpr {
 						classify_if_expr(expr, mut classifications, mut type_decls, mut
+							type_usages, mut field_usages, table)
+					}
+					ast.CallExpr {
+						classify_call_expr(expr, mut classifications, mut type_decls, mut
 							type_usages, mut field_usages, table)
 					}
 					else {
@@ -493,6 +497,16 @@ fn classify_expr_stmt(stmt &ast.ExprStmt, mut classifications []LineCoverage, mu
 			classify_match_expr(stmt.expr, mut classifications, mut type_decls, mut type_usages, mut
 				field_usages, table)
 		}
+		ast.CallExpr {
+			// Mark the call line as code
+			if line > 0 && line < classifications.len {
+				if classifications[line].line_type == .blank {
+					classifications[line].line_type = .code
+				}
+			}
+			classify_call_expr(stmt.expr, mut classifications, mut type_decls, mut type_usages, mut
+				field_usages, table)
+		}
 		else {
 			// Regular expression statement
 			if line > 0 && line < classifications.len {
@@ -514,7 +528,7 @@ fn classify_assign_stmt(stmt &ast.AssignStmt, mut classifications []LineCoverage
 		}
 	}
 
-	// Check right-hand side for match/if expressions and classify their branches
+	// Check right-hand side for match/if/call expressions and classify their branches
 	for expr in stmt.right {
 		match expr {
 			ast.MatchExpr {
@@ -523,6 +537,10 @@ fn classify_assign_stmt(stmt &ast.AssignStmt, mut classifications []LineCoverage
 			}
 			ast.IfExpr {
 				classify_if_expr(expr, mut classifications, mut type_decls, mut type_usages, mut
+					field_usages, table)
+			}
+			ast.CallExpr {
+				classify_call_expr(expr, mut classifications, mut type_decls, mut type_usages, mut
 					field_usages, table)
 			}
 			else {
@@ -646,6 +664,22 @@ fn classify_match_expr(match_expr &ast.MatchExpr, mut classifications []LineCove
 	if end_line > 0 && end_line < classifications.len && end_line != start_line {
 		classifications[end_line].line_type = .match_closing_brace
 		classifications[end_line].block_start = start_line
+	}
+}
+
+// classify_call_expr classifies a call expression's or_block statements
+fn classify_call_expr(call_expr &ast.CallExpr, mut classifications []LineCoverage, mut type_decls []TypeDecl, mut type_usages []TypeUsage, mut field_usages []FieldUsage, table &ast.Table) {
+	// Collect type usages from arguments
+	for arg in call_expr.args {
+		collect_type_usages(arg.expr, mut type_usages, mut field_usages, table)
+	}
+
+	// Classify statements inside or_block
+	if call_expr.or_block.stmts.len > 0 {
+		for stmt in call_expr.or_block.stmts {
+			classify_stmt(stmt, mut classifications, mut type_decls, mut type_usages, mut
+				field_usages, table)
+		}
 	}
 }
 

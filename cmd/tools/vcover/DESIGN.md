@@ -177,7 +177,7 @@ if lines[i].source == .instrumented {
 }
 ```
 
-**TODO**: Properly classify statements inside `or { }` blocks by traversing `CallExpr.or_block.stmts` in `classify_assign_stmt` and other handlers.
+**Implementation**: Added `classify_call_expr` function that traverses `CallExpr.or_block.stmts`. Updated `classify_assign_stmt`, `classify_expr_stmt`, and `classify_stmt` (Return case) to handle `ast.CallExpr` with `or_block`.
 
 ### 10. Inferred Hits Display Format
 
