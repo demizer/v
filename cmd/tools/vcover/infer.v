@@ -73,23 +73,29 @@ fn infer_coverage(analysis AstAnalysis, instrumented map[int]u64) FileCoverage {
 				}
 			}
 			.if_header {
-				// If header is covered if ANY body line in this branch has hits
-				end := lines[i].block_end
-				if any_covered_in_range(lines, i + 1, end - 1) {
-					lines[i].status = .covered
-					lines[i].source = .inferred
-				} else if has_any_code_in_range(lines, i + 1, end - 1) {
-					lines[i].status = .uncovered
+				// If header with instrumented hits is already covered, keep it
+				// Otherwise infer from body coverage
+				if lines[i].source != .instrumented {
+					end := lines[i].block_end
+					if any_covered_in_range(lines, i + 1, end - 1) {
+						lines[i].status = .covered
+						lines[i].source = .inferred
+					} else if has_any_code_in_range(lines, i + 1, end - 1) {
+						lines[i].status = .uncovered
+					}
 				}
 			}
 			.else_header {
-				// Else header is covered if ANY body line has hits
-				end := lines[i].block_end
-				if any_covered_in_range(lines, i + 1, end - 1) {
-					lines[i].status = .covered
-					lines[i].source = .inferred
-				} else if has_any_code_in_range(lines, i + 1, end - 1) {
-					lines[i].status = .uncovered
+				// Else header with instrumented hits is already covered, keep it
+				// Otherwise infer from body coverage
+				if lines[i].source != .instrumented {
+					end := lines[i].block_end
+					if any_covered_in_range(lines, i + 1, end - 1) {
+						lines[i].status = .covered
+						lines[i].source = .inferred
+					} else if has_any_code_in_range(lines, i + 1, end - 1) {
+						lines[i].status = .uncovered
+					}
 				}
 			}
 			.if_closing_brace {

@@ -193,7 +193,8 @@ fn render_source_line_with_coverage(line_num int, line string, lc LineCoverage) 
 			if lc.hits > 0 { '${lc.hits}x' } else { '0x' }
 		}
 		.inferred, .type_usage {
-			if lc.status == .covered { '~' } else { '' }
+			// Show ~ for all inferred lines (covered or uncovered)
+			if lc.status == .covered || lc.status == .uncovered { '~' } else { '' }
 		}
 		.not_available {
 			''

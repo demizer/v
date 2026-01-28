@@ -9,6 +9,7 @@ const t1 = np(os.join_path(tfolder, 't1'))
 const t2 = np(os.join_path(tfolder, 't2'))
 const t3 = np(os.join_path(tfolder, 't3'))
 const t_match = np(os.join_path(tfolder, 't_match'))
+const t_if = np(os.join_path(tfolder, 't_if'))
 
 fn testsuite_begin() {
 	os.setenv('VCOLORS', 'never', true)
@@ -273,6 +274,65 @@ fn test_match_arm_closing_braces_and_comments() {
 	assert found_file_scope_comment_uncolored, 'File-scope doc comments should NOT be colored'
 	assert found_blank_line_in_covered, 'Blank lines inside covered code should be marked covered'
 	assert found_file_scope_blank_uncolored, 'File-scope blank lines should NOT be colored'
+}
+
+fn test_if_statement_coverage() {
+	// Test that if header with hits marks itself and closing brace as covered
+	// even when the body is not executed
+	html_dir := np(os.join_path(tfolder, 'html_if'))
+	os.rmdir_all(html_dir) or {}
+
+	// Run test to generate coverage data
+	r := execute('${os.quoted_path(vexe)} -no-skip-unused -cov-data-dir ${os.quoted_path(t_if)} test cmd/tools/vcover/testdata/iftest/')
+	assert r.exit_code == 0, r.str()
+	assert os.exists(t_if), t_if
+
+	// Generate HTML report
+	r2 := execute('${os.quoted_path(vexe)} cover ${os.quoted_path(t_if)} --out ${os.quoted_path(html_dir)} --filter iftest/')
+	assert r2.exit_code == 0, r2.output
+
+	// Check file HTML
+	file_html_path := os.join_path(html_dir, 'files', 'cmd', 'tools', 'vcover', 'testdata',
+		'iftest', 'if_func.v.html')
+	file_html := os.read_file(file_html_path) or { '' }
+
+	lines := file_html.split_into_lines()
+	mut current_class := ''
+	mut found_if_header_covered := false
+	mut found_if_closing_covered := false
+	mut found_if_body_uncovered := false
+
+	for line in lines {
+		// Track div class
+		if line.contains('<div class="line ') {
+			if line.contains('covered') && !line.contains('uncovered') {
+				current_class = 'covered'
+			} else if line.contains('uncovered') {
+				current_class = 'uncovered'
+			} else {
+				current_class = ''
+			}
+		}
+
+		// Line 5: if header should be covered (has 1x hits)
+		if line.contains('line-num">5<') && current_class == 'covered' {
+			found_if_header_covered = true
+		}
+
+		// Line 7: return -1 should be uncovered (never executed)
+		if line.contains('line-num">7<') && current_class == 'uncovered' {
+			found_if_body_uncovered = true
+		}
+
+		// Line 8: closing brace should be covered (inherits from if header)
+		if line.contains('line-num">8<') && current_class == 'covered' {
+			found_if_closing_covered = true
+		}
+	}
+
+	assert found_if_header_covered, 'If header with hits should be marked covered'
+	assert found_if_body_uncovered, 'If body that was never executed should be uncovered'
+	assert found_if_closing_covered, 'If closing brace should inherit covered from header'
 }
 
 fn execute(cmd string) os.Result {
