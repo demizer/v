@@ -48,6 +48,16 @@ fn (mut g Gen) if_guard_error_cleanup(cvar_name string, expr_type ast.Type) {
 
 fn (mut g Gen) need_tmp_var_in_if(node ast.IfExpr) bool {
 	if node.is_expr && (g.inside_ternary == 0 || g.is_assign_lhs) {
+		// When generating coverage (-coverage), force if/else chain instead of ternary
+		// so that coverage points can be emitted for each branch.
+		// Note: Don't force this when inside an if-guard, as the hoisting mechanism
+		// conflicts with coverage's buffer manipulation and causes scoping issues.
+		// Also skip for fixed arrays since they require special memcpy handling that
+		// doesn't work with arbitrary rvalue expressions in branches.
+		if g.pref.is_coverage && !g.inside_if_guard
+			&& g.table.final_sym(node.typ).kind != .array_fixed {
+			return true
+		}
 		if g.is_autofree || node.typ.has_option_or_result() || node.is_comptime || g.is_assign_lhs {
 			return true
 		}

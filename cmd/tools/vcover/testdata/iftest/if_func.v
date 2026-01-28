@@ -9,3 +9,34 @@ pub fn check_length(arr []int) int {
 
 	return arr.len
 }
+
+// Test if expression used as assignment value - both branches should show exact coverage
+pub fn if_expr_then_branch(val int) int {
+	// Takes the then branch when val > 0
+	result := if val > 0 {
+		val * 2
+	} else {
+		-1
+	}
+	return result
+}
+
+pub fn if_expr_else_branch(val int) int {
+	// Takes the else branch when val <= 0
+	result := if val > 0 {
+		val * 2
+	} else {
+		-1
+	}
+	return result
+}
+
+pub fn if_expr_both_branches(val int) int {
+	// Tests coverage when both branches are taken across different calls
+	result := if val > 0 {
+		val * 2
+	} else {
+		val - 1
+	}
+	return result
+}
