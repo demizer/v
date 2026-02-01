@@ -988,13 +988,20 @@ fn (mut g Gen) fn_decl(node ast.FnDecl) {
 		return
 	}
 
-	if g.pref.parallel_cc {
+	if g.pref.parallel_cc || g.pref.use_local_cache {
 		if node.is_anon {
 			// g.write('static ')
 			// g.definitions.write_string('static ')
 		}
 		if !node.is_anon {
 			g.out_fn_start_pos << g.out.len
+		}
+	}
+	// Track module function positions for local cache
+	if g.pref.use_local_cache && !node.is_anon {
+		g.module_fn_positions << ModuleFnPos{
+			mod:       node.mod
+			start_pos: g.out.len
 		}
 	}
 	prev_is_direct_array_access := g.is_direct_array_access
@@ -1418,13 +1425,15 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 		c_extern_fn_header := 'extern ${type_name} ${fn_attrs}${name.all_after_first('C__')}('
 		g.definitions.write_string(c_extern_fn_header)
 	} else {
-		if !(node.is_pub || g.pref.is_debug) {
+		is_cross_module := g.pref.use_local_cache && g.table.cross_module_info != unsafe { nil }
+			&& node.fkey() in g.table.cross_module_info.extern_fns
+		if !(node.is_pub || g.pref.is_debug) && !is_cross_module {
 			// Private functions need to marked as static so that they are not exportable in the
 			// binaries
 			if g.pref.build_mode != .build_module && !g.pref.use_cache {
 				// If we are building vlib/builtin, we need all private functions like array_get
 				// to be public, so that all V programs can access them.
-				if !(node.is_anon && g.pref.parallel_cc) {
+				if !(node.is_anon && (g.pref.parallel_cc || g.pref.use_local_cache)) {
 					g.write('VV_LOC ')
 					// g.definitions.write_string('${g.static_modifier} VV_LOC ')
 					g.definitions.write_string('VV_LOC ')
@@ -1459,6 +1468,12 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 		}
 	}
 	arg_str := g.out.after(arg_start_pos)
+	// Add extern declaration for cross-module functions (local cache)
+	if g.pref.use_local_cache && g.table.cross_module_info != unsafe { nil }
+		&& node.fkey() in g.table.cross_module_info.extern_fns && !node.is_anon {
+		params_str := if node.params.len == 0 { 'void' } else { arg_str }
+		g.extern_out.writeln('extern ${type_name} ${name}(${params_str});')
+	}
 	if node.no_body || ((g.pref.use_cache && g.pref.build_mode != .build_module) && node.is_builtin
 		&& !g.pref.is_test) || skip {
 		// Just a function header. Builtin function bodies are defined in builtin.o
@@ -1999,7 +2014,7 @@ fn (mut g Gen) gen_anon_fn_decl(mut node ast.AnonFn) {
 	}
 	node.has_gen[fn_name] = true
 	g.anon_fn_definitions << out
-	if g.pref.parallel_cc {
+	if g.pref.parallel_cc || g.pref.use_local_cache {
 		g.extern_out.writeln('extern ${out.all_before(' {')};')
 	}
 }

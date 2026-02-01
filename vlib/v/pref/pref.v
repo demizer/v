@@ -163,6 +163,7 @@ pub mut:
 	dump_defines           string // `-dump-defines defines.txt` - let V store all the defines that affect the current program and their values, one define per line + `,` + its value.
 	generate_c_project     string // `-generate-c-project path` - generate a portable C project folder with the generated C file and build scripts.
 	use_cache              bool   // when set, use cached modules to speed up subsequent compilations, at the cost of slower initial ones (while the modules are cached)
+	use_local_cache        bool   // when set, use local project-specific module caching in .vcache/ for faster builds
 	retry_compilation      bool = true // retry the compilation with another C compiler, if tcc fails.
 	use_os_system_to_run   bool // when set, use os.system() to run the produced executable, instead of os.new_process; works around segfaults on macos, that may happen when xcode is updated
 	macosx_version_min     string = '0' // relevant only for macos and ios targets
@@ -953,6 +954,9 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 				res.use_cache = true
 				res.parallel_cc = false
 				res.no_parallel = true
+			}
+			'-local-cache' {
+				res.use_local_cache = true
 			}
 			'-use-os-system-to-run' {
 				res.use_os_system_to_run = true

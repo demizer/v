@@ -165,7 +165,7 @@ ${dec_fn_dec} {
 			dec.writeln('\tbuiltin___option_ok(&(${base_type_str}[]){ ${base_value} }, (${styp}*)&res, sizeof(${base_type_str}));\n')
 		}
 
-		extern_str := if g.pref.parallel_cc { 'extern ' } else { '' }
+		extern_str := if g.pref.parallel_cc || g.pref.use_local_cache { 'extern ' } else { '' }
 		g.json_forward_decls.writeln('${extern_str}${dec_fn_dec};')
 		// Codegen encoder
 		// encode_TYPE funcs receive an object to encode

@@ -60,6 +60,16 @@ pub fn (mut uf UsedFeatures) free() {
 	}
 }
 
+// CrossModuleInfo holds the result of cross-module call analysis.
+// Functions in extern_fns are called from other modules and need
+// extern linkage (not static) when compiling modules separately.
+// Used by -local-cache for per-module compilation.
+@[heap]
+pub struct CrossModuleInfo {
+pub mut:
+	extern_fns map[string]bool // fkey -> needs extern (not static)
+}
+
 @[heap; minify]
 pub struct Table {
 mut:
@@ -80,7 +90,8 @@ pub mut:
 	sumtypes           map[int]SumTypeDecl
 	cmod_prefix        string // needed for ast.type_to_str(Type) while vfmt; contains `os.`
 	is_fmt             bool
-	used_features      &UsedFeatures = &UsedFeatures{} // filled in by the builder via markused module, when pref.skip_unused = true;
+	used_features      &UsedFeatures    = &UsedFeatures{} // filled in by the builder via markused module, when pref.skip_unused = true;
+	cross_module_info  &CrossModuleInfo = unsafe { nil }            // filled in by crossmodule analysis for -local-cache
 	veb_res_idx_cache  int // Cache of `veb.Result` type
 	veb_ctx_idx_cache  int // Cache of `veb.Context` type
 	panic_handler      FnPanicHandler = default_table_panic_handler

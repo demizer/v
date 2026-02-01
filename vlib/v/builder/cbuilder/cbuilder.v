@@ -5,6 +5,7 @@ import strings
 import v.pref
 import v.util
 import v.builder
+import v.crossmodule
 import v.gen.c
 
 pub fn start() {
@@ -53,7 +54,7 @@ You can also seek #help on Discord: https://discord.gg/vlang
 		out_name_c = b.get_vtmp_filename(b.pref.out_name, '.tmp.so.c')
 	}
 	build_c(mut b, files, out_name_c)
-	if !b.pref.parallel_cc {
+	if !b.pref.parallel_cc && !b.pref.use_local_cache {
 		b.cc()
 	}
 }
@@ -81,6 +82,13 @@ pub fn gen_c(mut b builder.Builder, v_files []string) strings.Builder {
 		builder.verror(err.msg())
 	}
 
+	// Cross-module analysis for -local-cache
+	if b.pref.use_local_cache {
+		util.timing_start('Cross-module analysis')
+		b.table.cross_module_info = crossmodule.analyze(b.table, b.parsed_files)
+		util.timing_measure('Cross-module analysis')
+	}
+
 	util.timing_start('C GEN')
 	result := c.gen(b.parsed_files, mut b.table, b.pref)
 	util.timing_measure('C GEN')
@@ -90,6 +98,11 @@ pub fn gen_c(mut b builder.Builder, v_files []string) strings.Builder {
 		util.timing_start('Parallel C compilation')
 		parallel_cc(mut b, result) or { builder.verror(err.msg()) }
 		util.timing_measure('Parallel C compilation')
+	} else if b.pref.use_local_cache {
+		b.cc() // Call it just to gen b.str_args
+		util.timing_start('Local cache C compilation')
+		local_cache_cc(mut b, result) or { builder.verror(err.msg()) }
+		util.timing_measure('Local cache C compilation')
 	}
 
 	return result.res_builder

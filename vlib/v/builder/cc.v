@@ -1486,9 +1486,9 @@ pub fn (mut v Builder) cc() {
 			shell_args
 		}
 		mut cmd := '${v.quote_compiler_name(ccompiler)} ${str_args}'
-		if v.pref.parallel_cc {
-			// In parallel cc mode, all we want in cc() is build the str_args.
-			// Actual cc logic then happens in `parallel_cc()`
+		if v.pref.parallel_cc || v.pref.use_local_cache {
+			// In parallel cc / local cache mode, all we want in cc() is build the str_args.
+			// Actual cc logic then happens in `parallel_cc()` or `local_cache_cc()`
 			v.str_args = str_args
 			return
 		}

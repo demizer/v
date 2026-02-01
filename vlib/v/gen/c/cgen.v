@@ -38,6 +38,13 @@ struct ScopeGcPin {
 	post_stmt string
 }
 
+// ModuleFnPos tracks the module and start position of a function in the output buffer
+pub struct ModuleFnPos {
+pub:
+	mod       string // module name
+	start_pos int    // position in g.out where this function starts
+}
+
 pub struct Gen {
 	pref                &pref.Preferences = unsafe { nil }
 	field_data_type     ast.Type // cache her to avoid map lookups
@@ -307,11 +314,12 @@ mut:
 	/////////
 	// out_parallel []strings.Builder
 	// out_idx      int
-	out_fn_start_pos     []int  // for generating multiple .c files, stores locations of all fn positions in `out` string builder
-	static_modifier      string // for parallel_cc
-	static_non_parallel  string // for non -parallel_cc
-	has_reflection       bool   // v.reflection has been imported
-	has_debugger         bool   // $dbg has been used in the code
+	out_fn_start_pos     []int         // for generating multiple .c files, stores locations of all fn positions in `out` string builder
+	module_fn_positions  []ModuleFnPos // for -local-cache, tracks module and start position of each function
+	static_modifier      string        // for parallel_cc
+	static_non_parallel  string        // for non -parallel_cc
+	has_reflection       bool          // v.reflection has been imported
+	has_debugger         bool          // $dbg has been used in the code
 	reflection_strings   &map[string]int
 	defer_return_tmp_var string
 	veb_filter_fn_name   string   // veb__filter, used by $veb.html() for escaping strings in templates
@@ -333,12 +341,13 @@ mut:
 @[heap]
 pub struct GenOutput {
 pub:
-	header           string          // produced output for out.h (-parallel-cc)
-	res_builder      strings.Builder // produced output (complete)
-	out_str          string          // produced output from g.out
-	out0_str         string          // helpers output (auto fns, dump fns) for out_0.c (-parallel-cc)
-	extern_str       string          // extern chunk for (-parallel-cc)
-	out_fn_start_pos []int           // fn decl positions
+	header              string          // produced output for out.h (-parallel-cc)
+	res_builder         strings.Builder // produced output (complete)
+	out_str             string          // produced output from g.out
+	out0_str            string          // helpers output (auto fns, dump fns) for out_0.c (-parallel-cc)
+	extern_str          string          // extern chunk for (-parallel-cc)
+	out_fn_start_pos    []int           // fn decl positions
+	module_fn_positions []ModuleFnPos   // for -local-cache, module and position of each function
 }
 
 pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenOutput {
@@ -412,8 +421,16 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenO
 		variant_data_type:             table.find_type('VariantData')
 		is_cc_msvc:                    pref_.ccompiler == 'msvc'
 		use_segfault_handler:          pref_.should_use_segfault_handler()
-		static_modifier:               if pref_.parallel_cc || pref_.is_o { 'static ' } else { '' }
-		static_non_parallel:           if !pref_.parallel_cc { 'static ' } else { '' }
+		static_modifier:               if pref_.parallel_cc || pref_.is_o || pref_.use_local_cache {
+			'static '
+		} else {
+			''
+		}
+		static_non_parallel:           if !pref_.parallel_cc && !pref_.use_local_cache {
+			'static '
+		} else {
+			''
+		}
 		has_reflection:                'v.reflection' in table.modules
 		has_debugger:                  'v.debug' in table.modules
 		reflection_strings:            &reflection_strings
@@ -453,6 +470,8 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenO
 		util.timing_start('cgen unification')
 		for g in pp.get_results_ref[Gen]() {
 			global_g.embedded_files << g.embedded_files
+			// Track offset for position adjustments before appending output
+			out_offset := global_g.out.len
 			global_g.out << g.out
 			global_g.cheaders << g.cheaders
 			global_g.preincludes << g.preincludes
@@ -560,6 +579,16 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenO
 			global_g.hotcode_fn_names << g.hotcode_fn_names
 			global_g.hotcode_fpaths << g.hotcode_fpaths
 			global_g.test_function_names << g.test_function_names
+			// Adjust positions by the offset before this Gen's output was appended
+			for pos in g.out_fn_start_pos {
+				global_g.out_fn_start_pos << pos + out_offset
+			}
+			for mfp in g.module_fn_positions {
+				global_g.module_fn_positions << ModuleFnPos{
+					mod:       mfp.mod
+					start_pos: mfp.start_pos + out_offset
+				}
+			}
 			for k, v in g.autofree_methods {
 				global_g.autofree_methods[k] = v
 			}
@@ -771,7 +800,7 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenO
 		b.write_string2('\n// V result_xxx definitions:\n', g.out_results.str())
 	}
 	b.write_string2('\n// V definitions:\n', g.definitions.str())
-	if !pref_.parallel_cc {
+	if !pref_.parallel_cc && !pref_.use_local_cache {
 		b.writeln('\n// V global/const non-precomputed definitions:')
 		for var_name in g.sorted_global_const_names {
 			if var := g.global_const_defs[var_name] {
@@ -873,7 +902,7 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenO
 	if g.embedded_data.len > 0 {
 		helpers.write_string2('\n// V embedded data:\n', g.embedded_data.str())
 	}
-	if g.pref.parallel_cc {
+	if g.pref.parallel_cc || g.pref.use_local_cache {
 		helpers.writeln('\n// V global/const non-precomputed definitions:')
 		for var_name in g.sorted_global_const_names {
 			if var := g.global_const_defs[var_name] {
@@ -893,7 +922,7 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenO
 		}
 	}
 	if g.waiter_fn_definitions.len > 0 {
-		if g.pref.parallel_cc {
+		if g.pref.parallel_cc || g.pref.use_local_cache {
 			g.extern_out.write_string2('\n// V gowrappers waiter fns:\n',
 				g.waiter_fn_definitions.bytestr())
 		}
@@ -910,7 +939,7 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenO
 	}
 	if g.json_forward_decls.len > 0 {
 		helpers.write_string2('\n// V json forward decls:\n', g.json_forward_decls.bytestr())
-		if g.pref.parallel_cc {
+		if g.pref.parallel_cc || g.pref.use_local_cache {
 			g.extern_out.write_string2('\n// V json forward decls:\n', g.json_forward_decls.str())
 		}
 	}
@@ -946,7 +975,7 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenO
 
 	shelpers := helpers.str()
 
-	if !g.pref.parallel_cc {
+	if !g.pref.parallel_cc && !g.pref.use_local_cache {
 		b.write_string(shelpers)
 	}
 
@@ -969,16 +998,18 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) GenO
 		}
 	}
 	out_fn_start_pos := g.out_fn_start_pos.clone()
+	module_fn_positions := g.module_fn_positions.clone()
 	unsafe { helpers.free() }
 	unsafe { g.free_builders() }
 
 	return GenOutput{
-		header:           header
-		res_builder:      b
-		out_str:          out_str
-		out0_str:         shelpers
-		extern_str:       extern_out_str
-		out_fn_start_pos: out_fn_start_pos
+		header:              header
+		res_builder:         b
+		out_str:             out_str
+		out0_str:            shelpers
+		extern_str:          extern_out_str
+		out_fn_start_pos:    out_fn_start_pos
+		module_fn_positions: module_fn_positions
 	}
 }
 
@@ -1455,7 +1486,7 @@ pub fn (mut g Gen) write_typeof_functions() {
 			already_generated_ifaces[sym.cname] = true
 			impl_types := g.runtime_interface_variants(inter_info)
 			g.definitions.writeln('${g.static_non_parallel}string v_typeof_interface_${sym.cname}(u32 sidx);')
-			if g.pref.parallel_cc {
+			if g.pref.parallel_cc || g.pref.use_local_cache {
 				g.extern_out.writeln('extern string v_typeof_interface_${sym.cname}(u32 sidx);')
 			}
 			g.writeln('${g.static_non_parallel}string v_typeof_interface_${sym.cname}(u32 sidx) {')
@@ -1476,11 +1507,15 @@ pub fn (mut g Gen) write_typeof_functions() {
 			g.writeln2('\treturn _S("unknown ${util.strip_main_name(sym.name)}");', '}')
 			// Avoid duplicate symbol '_v_typeof_interface_idx_IError' when using -usecache
 			if g.pref.build_mode != .build_module {
-				interface_idx_static_prefix := if g.pref.is_o { 'static ' } else { '' }
+				interface_idx_static_prefix := if g.pref.is_o || g.pref.use_local_cache {
+					'static '
+				} else {
+					''
+				}
 				g.definitions.writeln('${interface_idx_static_prefix}u32 v_typeof_interface_idx_${sym.cname}(u32 sidx);')
 				g.writeln2('',
 					'${interface_idx_static_prefix}u32 v_typeof_interface_idx_${sym.cname}(u32 sidx) {')
-				if g.pref.parallel_cc && interface_idx_static_prefix == '' {
+				if (g.pref.parallel_cc || g.pref.use_local_cache) && interface_idx_static_prefix == '' {
 					g.extern_out.writeln('extern u32 v_typeof_interface_idx_${sym.cname}(u32 sidx);')
 				}
 				for t in impl_types {
@@ -7493,7 +7528,7 @@ fn (mut g Gen) gen_closure_fn(expr_styp string, m ast.Fn, name string) {
 		sb.write_string('${g.styp(param.typ)} a${i}')
 	}
 	sb.write_string(')')
-	if g.pref.parallel_cc {
+	if g.pref.parallel_cc || g.pref.use_local_cache {
 		g.extern_out.write_string(sb.bytestr())
 		g.extern_out.writeln(';')
 	}
