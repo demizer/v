@@ -289,7 +289,7 @@ fn main() {
 	mut fp := flag.new_flag_parser(os.args#[1..])
 	fp.application('v cover')
 	fp.version('0.4')
-	fp.description('Analyze & make reports, based on cover files, produced by running programs and tests, compiled with `-cov-data-dir folder/`')
+	fp.description('Analyze & make reports, based on cover files, produced by running programs and tests, compiled with `--cov-data-dir folder/`')
 	fp.arguments_description('[folder1/ file2 ...]')
 	fp.skip_executable()
 	ctx.show_help = fp.bool('help', `h`, false, 'Show this help text.')
@@ -313,11 +313,11 @@ fn main() {
 		log.error(fp.usage())
 		exit(1)
 	}
-	// Handle -cov-data-dir flag (adds to targets)
+	// Handle --cov-data-dir flag (adds to targets)
 	if cov_data_dir != '' {
 		targets << cov_data_dir
 	}
-	// Handle -cov-report flag (parses format:path)
+	// Handle --cov-report flag (parses format:path)
 	if cov_report != '' {
 		parts := cov_report.split_nth(':', 2)
 		report_format := parts[0]

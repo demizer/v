@@ -1,5 +1,16 @@
 # vcover HTML Report - Design Decisions
 
+TODO: before ship
+
+- fix -cov-data-dir to match existing style (don't want to rock the boat too much)
+- cleanup this doc
+- Use it for two weeks
+- report text and report html parity
+- ask llm for better green and red colors
+- move doc to "v cover"
+- pretty print templates
+- test cov reset and append
+
 This document tracks key design decisions made during the development of the AST-based coverage inference system for vcover HTML reports.
 
 ## Overview
