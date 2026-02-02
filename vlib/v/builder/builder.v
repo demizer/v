@@ -213,23 +213,89 @@ pub fn (mut b Builder) front_stages(v_files []string) ! {
 }
 
 // parse_files_with_cache parses files using the parse cache if enabled
+// Uses two-pass loading: first register all contributions, then deserialize ASTs
 fn (mut b Builder) parse_files_with_cache(paths []string) []&ast.File {
 	// If cache not enabled, use normal parsing
 	if !b.parse_cache.enabled {
 		return parser.parse_files(paths, mut b.table, b.pref)
 	}
 
-	mut files := []&ast.File{cap: paths.len}
+	// Categorize files: cached vs need-to-parse
+	mut cached_paths := []string{}
+	mut parse_paths := []string{}
+
 	for path in paths {
-		file := b.parse_file_with_cache(path)
+		file_info := os.stat(path) or {
+			parse_paths << path
+			continue
+		}
+		mtime := file_info.mtime
+
+		if b.parse_cache.is_valid(path, mtime) {
+			cached_paths << path
+		} else {
+			// Check content hash as fallback
+			content := os.read_file(path) or { '' }
+			if b.parse_cache.is_valid_with_hash(path, mtime, content) {
+				// Update mtime in manifest
+				b.parse_cache.update_entry(path, compute_file_hash(content), mtime, b.parse_cache.get_cache_path(path))
+				cached_paths << path
+			} else {
+				parse_paths << path
+			}
+		}
+	}
+
+	// PASS 1: Parse fresh files first (this registers their types in the table)
+	mut files := []&ast.File{cap: paths.len}
+	for path in parse_paths {
+		file := b.parse_and_cache_file(path)
 		files << file
 	}
+
+	// PASS 2: Try to load from cache; if AST fails, fall back to parsing
+	// Note: We try to load full cache entry (contributions + AST) together
+	// If AST fails due to unresolved types, we parse normally (which registers types properly)
+	for path in cached_paths {
+		if cached := b.parse_cache.load(path, b.table) {
+			// Successfully loaded from cache - register contributions
+			register_contributions(mut b.table, &cached.contributions)
+			if b.table.filelist.index(path) == -1 {
+				b.table.filelist << path
+			}
+			files << cached.file
+		} else {
+			// Cache load failed (likely unresolved types), parse normally
+			file := b.parse_and_cache_file(path)
+			files << file
+		}
+	}
+
 	// Handle any codegen files that were generated during parsing
 	parser.handle_codegen_for_multiple_files(mut files)
 	return files
 }
 
+// parse_and_cache_file parses a file and saves it to cache
+fn (mut b Builder) parse_and_cache_file(path string) &ast.File {
+	content := os.read_file(path) or { '' }
+	file_info := os.stat(path) or {
+		return parser.parse_file(path, mut b.table, .skip_comments, b.pref)
+	}
+	mtime := file_info.mtime
+
+	// Parse the file
+	file := parser.parse_file(path, mut b.table, .skip_comments, b.pref)
+
+	// Extract and save table contributions
+	contributions := ast.extract_table_contributions(file, b.table)
+	b.parse_cache.save(path, content, mtime, file, &contributions, b.table)
+
+	return file
+}
+
 // parse_file_with_cache parses a single file using the cache if valid
+// Note: For batch loading, use parse_files_with_cache instead for proper two-pass loading
 fn (mut b Builder) parse_file_with_cache(path string) &ast.File {
 	// Get file info for mtime
 	file_info := os.stat(path) or {
@@ -240,15 +306,15 @@ fn (mut b Builder) parse_file_with_cache(path string) &ast.File {
 
 	// Check if cache is valid using quick mtime check
 	if b.parse_cache.is_valid(path, mtime) {
-		// Try to load from cache
-		if cached := b.parse_cache.load(path) {
-			// Register file in table (parser normally does this)
-			if b.table.filelist.index(path) == -1 {
-				b.table.filelist << path
+		// Load contributions first, register them, then load AST
+		if contributions := b.parse_cache.load_contributions(path) {
+			register_contributions(mut b.table, &contributions)
+			if file := b.parse_cache.load_ast(path, b.table) {
+				if b.table.filelist.index(path) == -1 {
+					b.table.filelist << path
+				}
+				return file
 			}
-			// Register table contributions from cache
-			register_contributions(mut b.table, &cached.contributions)
-			return cached.file
 		}
 	}
 
@@ -258,27 +324,22 @@ fn (mut b Builder) parse_file_with_cache(path string) &ast.File {
 
 	// Check if content hash matches (mtime changed but content same)
 	if b.parse_cache.is_valid_with_hash(path, mtime, content) {
-		if cached := b.parse_cache.load(path) {
-			// Update mtime in manifest since content is same
-			b.parse_cache.update_entry(path, compute_file_hash(content), mtime, b.parse_cache.get_cache_path(path))
-			// Register file in table
-			if b.table.filelist.index(path) == -1 {
-				b.table.filelist << path
+		// Update mtime in manifest since content is same
+		b.parse_cache.update_entry(path, compute_file_hash(content), mtime, b.parse_cache.get_cache_path(path))
+		// Load contributions first, register them, then load AST
+		if contributions := b.parse_cache.load_contributions(path) {
+			register_contributions(mut b.table, &contributions)
+			if file := b.parse_cache.load_ast(path, b.table) {
+				if b.table.filelist.index(path) == -1 {
+					b.table.filelist << path
+				}
+				return file
 			}
-			// Register table contributions from cache
-			register_contributions(mut b.table, &cached.contributions)
-			return cached.file
 		}
 	}
 
 	// Parse the file normally
-	file := parser.parse_file(path, mut b.table, .skip_comments, b.pref)
-
-	// Extract and save table contributions
-	contributions := ast.extract_table_contributions(file, b.table)
-	b.parse_cache.save(path, content, mtime, file, &contributions)
-
-	return file
+	return b.parse_and_cache_file(path)
 }
 
 pub fn (mut b Builder) middle_stages() ! {

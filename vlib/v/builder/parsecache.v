@@ -109,8 +109,24 @@ pub:
 	contributions ast.TableContributions
 }
 
-// load attempts to load a cached AST file and its table contributions
-pub fn (mut pc ParseCache) load(source_path string) ?CachedFile {
+// load_contributions loads only the table contributions from a cached file (for two-pass loading)
+pub fn (mut pc ParseCache) load_contributions(source_path string) ?ast.TableContributions {
+	entry := pc.manifest.files[source_path] or { return none }
+
+	// Read cached data
+	data := os.read_bytes(entry.cache_file) or { return none }
+
+	// Create reader and skip past AST data to get contributions
+	mut r := ast.new_ast_reader(data)
+	file_size := r.read_u32()
+	r.pos += int(file_size) // Skip AST data
+
+	// Read and return contributions
+	return r.read_table_contributions()
+}
+
+// load_ast loads only the AST from a cached file (for two-pass loading, after contributions registered)
+pub fn (mut pc ParseCache) load_ast(source_path string, table &ast.Table) ?&ast.File {
 	entry := pc.manifest.files[source_path] or {
 		pc.stats.misses++
 		return none
@@ -128,16 +144,47 @@ pub fn (mut pc ParseCache) load(source_path string) ?CachedFile {
 	// Read AST file size and data
 	file_size := r.read_u32()
 	file_data := data[r.pos..r.pos + int(file_size)]
-	r.pos += int(file_size)
 
-	// Deserialize AST
-	file := ast.deserialize_file(file_data) or {
+	// Deserialize AST with table for type resolution
+	file := ast.deserialize_file(file_data, table) or {
 		pc.stats.misses++
 		return none
 	}
 
-	// Read table contributions
+	pc.stats.hits++
+	return file
+}
+
+// load attempts to load a cached AST file and its table contributions (single-pass, for compatibility)
+pub fn (mut pc ParseCache) load(source_path string, table &ast.Table) ?CachedFile {
+	entry := pc.manifest.files[source_path] or {
+		pc.stats.misses++
+		return none
+	}
+
+	// Read cached data
+	data := os.read_bytes(entry.cache_file) or {
+		pc.stats.misses++
+		return none
+	}
+
+	// Create reader for contributions (skip type resolution - they'll be remapped)
+	mut r := ast.new_ast_reader(data)
+	r.skip_type_resolution = true
+
+	// Read AST file size and data
+	file_size := r.read_u32()
+	file_data := data[r.pos..r.pos + int(file_size)]
+	r.pos += int(file_size)
+
+	// Read table contributions (with type resolution skipped)
 	contributions := r.read_table_contributions()
+
+	// Deserialize AST with table for type resolution (NOT skipped)
+	file := ast.deserialize_file(file_data, table) or {
+		pc.stats.misses++
+		return none
+	}
 
 	pc.stats.hits++
 	return CachedFile{
@@ -147,21 +194,21 @@ pub fn (mut pc ParseCache) load(source_path string) ?CachedFile {
 }
 
 // save saves a parsed AST file and its table contributions to cache
-pub fn (mut pc ParseCache) save(source_path string, content string, file_mtime i64, file &ast.File, contributions &ast.TableContributions) {
+pub fn (mut pc ParseCache) save(source_path string, content string, file_mtime i64, file &ast.File, contributions &ast.TableContributions, table &ast.Table) {
 	cache_path := pc.get_cache_path(source_path)
 	content_hash := compute_file_hash(content)
 
-	// Serialize AST and contributions together
-	mut w := ast.new_ast_writer(4096)
+	// Serialize AST and contributions together - use table for type name serialization
+	mut w := ast.new_ast_writer_with_table(4096, table)
 
-	// Write AST file
-	file_data := ast.serialize_file(file)
+	// Write AST file with table for type name serialization
+	file_data := ast.serialize_file(file, table)
 	w.write_u32(u32(file_data.len))
 	for b in file_data {
 		w.buf << b
 	}
 
-	// Write table contributions
+	// Write table contributions (also uses table for type name serialization)
 	w.write_table_contributions(contributions)
 
 	// Write cache file
@@ -226,50 +273,23 @@ pub fn (pc &ParseCache) print_stats() {
 
 // register_contributions registers cached table contributions back into the table
 pub fn register_contributions(mut table ast.Table, contributions &ast.TableContributions) {
-	// Debug: print what we're registering
-	if contributions.type_symbols.len > 0 {
-		mut names := []string{}
-		for ts in contributions.type_symbols {
-			names << ts.name
-		}
-		eprintln('DEBUG: contributions has ${contributions.type_symbols.len} type_symbols: ${names[..if names.len > 5 {
-			5
-		} else {
-			names.len
-		}]}')
-		eprintln('DEBUG: type_names map has ${contributions.type_names.len} entries')
-	}
-
 	// Build remap table: old_idx -> new_idx
 	mut remap := map[int]int{}
-	mut unmapped := []string{}
 	for old_idx, type_name in contributions.type_names {
 		// Look up the type name in the current table
 		if new_idx := table.type_idxs[type_name] {
 			remap[old_idx] = new_idx
-		} else {
-			unmapped << '${old_idx}:${type_name}'
 		}
 	}
-	if unmapped.len > 0 {
-		eprintln('DEBUG: unmapped types: ${unmapped[..if unmapped.len > 10 {
-			10
-		} else {
-			unmapped.len
-		}]}')
-	}
-	eprintln('DEBUG: remap built with ${remap.len} entries, table has ${table.type_symbols.len} types')
 
 	// Register type symbols with remapped types
 	for ts in contributions.type_symbols {
 		// Check if already registered by name
 		if ts.name in table.type_idxs {
-			eprintln('DEBUG: skipping already registered: ${ts.name}')
 			continue
 		}
 		// Remap types in the TypeSymbol and register
 		remapped_ts := remap_type_symbol(ts, remap)
-		eprintln('DEBUG: registering type: ${ts.name} kind=${ts.kind}')
 		table.register_sym(remapped_ts)
 	}
 
@@ -313,8 +333,15 @@ fn remap_type_array(types []ast.Type, remap map[int]int) []ast.Type {
 
 // remap_type_symbol remaps all Type values in a TypeSymbol
 fn remap_type_symbol(ts ast.TypeSymbol, remap map[int]int) ast.TypeSymbol {
+	// Remap parent_idx if present
+	mut new_parent_idx := ts.parent_idx
+	if ts.parent_idx > 0 {
+		if new_idx := remap[ts.parent_idx] {
+			new_parent_idx = new_idx
+		}
+	}
 	return ast.TypeSymbol{
-		parent_idx:    ts.parent_idx
+		parent_idx:    new_parent_idx
 		kind:          ts.kind
 		name:          ts.name
 		cname:         ts.cname

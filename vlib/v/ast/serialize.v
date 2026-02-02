@@ -7,7 +7,7 @@ import v.token
 
 // Magic bytes for cache file identification
 const cache_magic = [u8(`V`), `A`, `S`, `T`]
-const cache_version = u32(7)
+const cache_version = u32(8)
 
 // ExprKind discriminator for Expr sumtype variants
 pub enum ExprKind as u8 {
@@ -103,7 +103,8 @@ pub enum StmtKind as u8 {
 // AstWriter handles serialization of AST to binary format
 pub struct AstWriter {
 pub mut:
-	buf []u8
+	buf   []u8
+	table &Table = unsafe { nil } // Reference to type table for name lookups
 }
 
 // AstReader handles deserialization of binary format to AST
@@ -111,7 +112,10 @@ pub struct AstReader {
 pub:
 	data []u8
 pub mut:
-	pos int
+	table                &Table = unsafe { nil } // Reference to type table for name resolution (mut for on-demand type registration)
+	pos                  int
+	unresolved_type_err  bool // Set to true if any type failed to resolve
+	skip_type_resolution bool // When true, read_type returns Type(0) without resolving (for contribution loading)
 }
 
 // new_ast_writer creates a new AST writer with the given initial buffer size
@@ -121,10 +125,26 @@ pub fn new_ast_writer(initial_size int) AstWriter {
 	}
 }
 
+// new_ast_writer_with_table creates a new AST writer with table reference
+pub fn new_ast_writer_with_table(initial_size int, table &Table) AstWriter {
+	return AstWriter{
+		buf:   []u8{cap: initial_size}
+		table: table
+	}
+}
+
 // new_ast_reader creates a new AST reader from serialized data
 pub fn new_ast_reader(data []u8) AstReader {
 	return AstReader{
 		data: data
+	}
+}
+
+// new_ast_reader_with_table creates a new AST reader with table reference
+pub fn new_ast_reader_with_table(data []u8, table &Table) AstReader {
+	return AstReader{
+		data:  data
+		table: table
 	}
 }
 
@@ -173,9 +193,32 @@ fn (mut w AstWriter) write_string(s string) {
 	}
 }
 
-// write_type writes a Type (u32 index)
+// write_type writes a Type as name + flags for stable serialization
 fn (mut w AstWriter) write_type(t Type) {
-	w.write_u32(u32(t))
+	// Extract index and flags
+	idx := t.idx()
+	flags := u32(t) & 0xffff0000 // Upper 16 bits contain flags
+
+	// Look up type name from table
+	mut name := ''
+	table_valid := w.table != unsafe { nil }
+	if table_valid && idx > 0 && idx < w.table.type_symbols.len {
+		if ts := w.table.type_symbols[idx] {
+			name = ts.name
+		}
+	}
+
+	// Debug output for all types with idx > 0
+	if idx > 0 {
+		ts_len := if table_valid { w.table.type_symbols.len } else { -1 }
+		if name.len == 0 {
+			eprintln('DEBUG write_type: idx=${idx} -> EMPTY NAME! table_valid=${table_valid} ts_len=${ts_len}')
+		}
+	}
+
+	// Write name and flags
+	w.write_string(name)
+	w.write_u32(flags)
 }
 
 // --- Primitive Readers ---
@@ -234,8 +277,145 @@ fn (mut r AstReader) read_string() string {
 }
 
 // read_type reads a Type (u32 index)
+// read_type reads a Type name and resolves it to current table index
 fn (mut r AstReader) read_type() Type {
-	return Type(r.read_u32())
+	// Read name and flags
+	name := r.read_string()
+	flags := r.read_u32()
+
+	// Skip resolution if requested (for contribution loading where types are remapped later)
+	if r.skip_type_resolution {
+		// Return Type(0) with flags - the actual type will be remapped from type_names
+		return Type(flags)
+	}
+
+	// Resolve name to current index
+	mut idx := 0
+	if r.table != unsafe { nil } && name.len > 0 {
+		if found_idx := r.table.type_idxs[name] {
+			idx = found_idx
+		} else {
+			// Try to register compound types on-demand
+			idx = try_register_type_by_name(mut r.table, name)
+			if idx == 0 {
+				// Type couldn't be resolved - mark as error for fallback
+				r.unresolved_type_err = true
+			}
+		}
+	}
+
+	// Combine index with flags
+	return Type(u32(idx) | flags)
+}
+
+// try_register_type_by_name attempts to register a compound type by parsing its name
+// Returns the type index if successful, 0 otherwise
+fn try_register_type_by_name(mut table Table, name string) int {
+	// Handle array types: []T
+	if name.starts_with('[]') {
+		elem_name := name[2..]
+		elem_idx := resolve_type_name(mut table, elem_name)
+		if elem_idx > 0 {
+			arr_idx := table.find_or_register_array(new_type(elem_idx))
+			return arr_idx
+		}
+	}
+	// Handle fixed array types: [N]T
+	else if name.starts_with('[') && name.contains(']') {
+		bracket_end := name.index(']') or { return 0 }
+		size_str := name[1..bracket_end]
+		size := size_str.int()
+		if size > 0 || size_str == '0' {
+			elem_name := name[bracket_end + 1..]
+			elem_idx := resolve_type_name(mut table, elem_name)
+			if elem_idx > 0 {
+				arr_idx := table.find_or_register_array_fixed(new_type(elem_idx), size,
+					empty_expr, false)
+				return arr_idx
+			}
+		}
+	}
+	// Handle map types: map[K]V
+	else if name.starts_with('map[') {
+		// Find the matching ] for the key type
+		mut depth := 0
+		mut key_end := -1
+		for i, c in name[4..] {
+			if c == `[` {
+				depth++
+			} else if c == `]` {
+				if depth == 0 {
+					key_end = i + 4
+					break
+				}
+				depth--
+			}
+		}
+		if key_end > 4 {
+			key_name := name[4..key_end]
+			value_name := name[key_end + 1..]
+			key_idx := resolve_type_name(mut table, key_name)
+			value_idx := resolve_type_name(mut table, value_name)
+			if key_idx > 0 && value_idx > 0 {
+				map_idx := table.find_or_register_map(new_type(key_idx), new_type(value_idx))
+				return map_idx
+			}
+		}
+	}
+	// Handle channel types: chan T
+	else if name.starts_with('chan ') {
+		elem_name := name[5..]
+		elem_idx := resolve_type_name(mut table, elem_name)
+		if elem_idx > 0 {
+			chan_idx := table.find_or_register_chan(new_type(elem_idx), false)
+			return chan_idx
+		}
+	}
+	// Handle thread types: thread T
+	else if name.starts_with('thread ') {
+		elem_name := name[7..]
+		elem_idx := resolve_type_name(mut table, elem_name)
+		if elem_idx > 0 {
+			thread_idx := table.find_or_register_thread(new_type(elem_idx))
+			return thread_idx
+		}
+	}
+	// Handle function types: fn (params) return
+	else if name.starts_with('fn ') || name.starts_with('fn(') {
+		// Function types are complex - skip detailed parsing
+		// They're typically C callback types that we can't easily recreate
+		return 0
+	}
+	// Handle multi-return types: (T1, T2)
+	else if name.starts_with('(') && name.ends_with(')') && name.contains(',') {
+		inner := name[1..name.len - 1]
+		parts := inner.split(', ')
+		mut types := []Type{}
+		for part in parts {
+			idx := resolve_type_name(mut table, part.trim_space())
+			if idx > 0 {
+				types << new_type(idx)
+			} else {
+				return 0
+			}
+		}
+		if types.len > 0 {
+			mr_idx := table.find_or_register_multi_return(types)
+			return mr_idx
+		}
+	}
+
+	return 0
+}
+
+// resolve_type_name looks up a type name, registering compound types if needed
+fn resolve_type_name(mut table Table, name string) int {
+	// First check if it exists
+	if idx := table.type_idxs[name] {
+		return idx
+	}
+	// Try to register it
+	return try_register_type_by_name(mut table, name)
 }
 
 // --- Position Serialization ---
@@ -3277,8 +3457,8 @@ fn (mut r AstReader) read_ident() Ident {
 // --- File Serialization ---
 
 // serialize_file serializes an ast.File to binary format
-pub fn serialize_file(file &File) []u8 {
-	mut w := new_ast_writer(4096)
+pub fn serialize_file(file &File, table &Table) []u8 {
+	mut w := new_ast_writer_with_table(4096, table)
 
 	// Write header
 	for b in cache_magic {
@@ -3327,8 +3507,8 @@ pub fn serialize_file(file &File) []u8 {
 }
 
 // deserialize_file deserializes binary data to an ast.File
-pub fn deserialize_file(data []u8) !&File {
-	mut r := new_ast_reader(data)
+pub fn deserialize_file(data []u8, table &Table) !&File {
+	mut r := new_ast_reader_with_table(data, table)
 
 	// Verify header
 	for b in cache_magic {
@@ -3381,6 +3561,20 @@ pub fn deserialize_file(data []u8) !&File {
 		stmts << r.read_stmt()
 	}
 
+	// Check if any types couldn't be resolved - if so, fall back to normal parsing
+	if r.unresolved_type_err {
+		return error('unresolved type references - fallback to parsing required')
+	}
+
+	// Create empty scopes - scopes will need to be rebuilt by the caller
+	// Note: For now, we mark deserialization as failed because scopes aren't properly serialized
+	// TODO: Implement proper scope serialization or scope reconstruction
+	return error('scope reconstruction not implemented - fallback to parsing required')
+
+	// The code below would return a File with empty scopes, but this causes
+	// checker crashes because scopes aren't properly built
+	/*
+	global_scope := &Scope{}
 	return &File{
 		path:           path
 		path_base:      path_base
@@ -3396,7 +3590,10 @@ pub fn deserialize_file(data []u8) !&File {
 		auto_imports:   auto_imports
 		embedded_files: embedded_files
 		stmts:          stmts
+		global_scope:   global_scope
+		scope:          global_scope
 	}
+	*/
 }
 
 // --- Table Contributions Serialization ---
