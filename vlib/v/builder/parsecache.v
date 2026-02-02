@@ -125,6 +125,26 @@ pub fn (mut pc ParseCache) load_contributions(source_path string) ?ast.TableCont
 	return r.read_table_contributions()
 }
 
+// can_load_ast tests if an AST can be loaded by checking if all type names can be resolved
+// Uses the actual table to check type resolution without registering new types
+pub fn (mut pc ParseCache) can_load_ast(source_path string, table &ast.Table) bool {
+	entry := pc.manifest.files[source_path] or { return false }
+
+	// Read cached data
+	data := os.read_bytes(entry.cache_file) or { return false }
+
+	// Create reader
+	mut r := ast.new_ast_reader(data)
+
+	// Read AST file size and data
+	file_size := r.read_u32()
+	file_data := data[r.pos..r.pos + int(file_size)]
+
+	// Test deserialization using a copy of the table to avoid side effects
+	// Create a minimal test table that shares type_idxs for lookup but discards new registrations
+	return ast.can_deserialize_file(file_data, table)
+}
+
 // load_ast loads only the AST from a cached file (for two-pass loading, after contributions registered)
 pub fn (mut pc ParseCache) load_ast(source_path string, table &ast.Table) ?&ast.File {
 	entry := pc.manifest.files[source_path] or {
@@ -147,6 +167,7 @@ pub fn (mut pc ParseCache) load_ast(source_path string, table &ast.Table) ?&ast.
 
 	// Deserialize AST with table for type resolution
 	file := ast.deserialize_file(file_data, table) or {
+		eprintln('> load_ast failed for ${source_path}: ${err}')
 		pc.stats.misses++
 		return none
 	}

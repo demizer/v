@@ -116,6 +116,7 @@ pub mut:
 	pos                  int
 	unresolved_type_err  bool // Set to true if any type failed to resolve
 	skip_type_resolution bool // When true, read_type returns Type(0) without resolving (for contribution loading)
+	test_only            bool // When true, don't register new types - just test if resolution would succeed
 }
 
 // new_ast_writer creates a new AST writer with the given initial buffer size
@@ -291,17 +292,48 @@ fn (mut r AstReader) read_type() Type {
 
 	// Resolve name to current index
 	mut idx := 0
-	if r.table != unsafe { nil } && name.len > 0 {
+	if name.len == 0 {
+		// Empty type name - use void
+		idx = void_type_idx
+	} else if r.table != unsafe { nil } {
 		if found_idx := r.table.type_idxs[name] {
 			idx = found_idx
+		} else if r.test_only {
+			// In test mode, don't register new types - just check if resolution would succeed
+			// Types that aren't found and can't use placeholders cause unresolved error
+			if name.starts_with('fn ') || name.starts_with('fn(')
+				|| name.starts_with('C.')
+				|| (name.len == 1 && name[0] >= `A` && name[0] <= `Z`) {
+				idx = voidptr_type_idx
+			} else {
+				r.unresolved_type_err = true
+				idx = voidptr_type_idx
+			}
 		} else {
 			// Try to register compound types on-demand
 			idx = try_register_type_by_name(mut r.table, name)
 			if idx == 0 {
-				// Type couldn't be resolved - mark as error for fallback
-				r.unresolved_type_err = true
+				// Type not found - check if we can use a placeholder
+				if name.starts_with('fn ') || name.starts_with('fn(') {
+					// Function types - use voidptr (callback pointers)
+					idx = voidptr_type_idx
+				} else if name.starts_with('C.') {
+					// C types - use voidptr (opaque C structs)
+					idx = voidptr_type_idx
+				} else if name.len == 1 && name[0] >= `A` && name[0] <= `Z` {
+					// Generic type parameter (T, K, V) - use voidptr
+					idx = voidptr_type_idx
+				} else {
+					// Module types and others need real resolution
+					// Mark error for fallback to fresh parsing
+					r.unresolved_type_err = true
+					idx = voidptr_type_idx
+				}
 			}
 		}
+	} else {
+		// No table provided - use voidptr as fallback
+		idx = voidptr_type_idx
 	}
 
 	// Combine index with flags
@@ -3526,6 +3558,81 @@ pub fn serialize_file(file &File, table &Table) []u8 {
 	}
 
 	return w.buf
+}
+
+// can_deserialize_file tests if a file can be deserialized without side effects
+// Does a full deserialize in test mode to check all type references
+// Returns true if all types can be resolved, false otherwise
+pub fn can_deserialize_file(data []u8, table &Table) bool {
+	mut r := new_ast_reader_with_table(data, table)
+	r.test_only = true
+
+	// Verify header
+	for b in cache_magic {
+		if r.read_u8() != b {
+			return false
+		}
+	}
+	version := r.read_u32()
+	if version != cache_version {
+		return false
+	}
+
+	// Read file path info (skip)
+	_ = r.read_string()
+	_ = r.read_string()
+
+	// Read file metadata (skip)
+	_ = r.read_i32()
+	_ = r.read_i32()
+	_ = r.read_i32()
+	_ = r.read_bool()
+	_ = r.read_bool()
+	_ = r.read_bool()
+	_ = r.read_u8()
+
+	// Read module (skip)
+	_ = r.read_module()
+
+	// Read imports (skip)
+	imports_len := r.read_u32()
+	for _ in 0 .. imports_len {
+		_ = r.read_import()
+	}
+
+	// Read string arrays (skip)
+	_ = r.read_string_array()
+	_ = r.read_string_array()
+	_ = r.read_string_array()
+
+	// Read imported_symbols map (skip)
+	imported_symbols_len := r.read_u32()
+	for _ in 0 .. imported_symbols_len {
+		_ = r.read_string()
+		_ = r.read_string()
+	}
+
+	// Read more string arrays (skip)
+	_ = r.read_string_array()
+	_ = r.read_string_array()
+	_ = r.read_string()
+
+	// Read embedded files (skip)
+	ef_len := r.read_u32()
+	for _ in 0 .. ef_len {
+		_ = r.read_embedded_file()
+	}
+
+	// Read statements - this is where types are used
+	stmts_len := r.read_u32()
+	for _ in 0 .. stmts_len {
+		_ = r.read_stmt()
+		if r.unresolved_type_err {
+			return false
+		}
+	}
+
+	return !r.unresolved_type_err
 }
 
 // deserialize_file deserializes binary data to an ast.File

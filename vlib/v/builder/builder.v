@@ -267,60 +267,10 @@ fn (mut b Builder) parse_files_with_cache(paths []string) []&ast.File {
 		files << file
 	}
 
-	// PASS 2a: Load ALL contributions from cached files first
-	// This ensures all functions/types are registered before AST deserialization
-	// Debug: check table state before contributions
-	mut is_empty_count_before := 0
-	for fkey, _ in b.table.fns {
-		if fkey.contains('is_empty') {
-			is_empty_count_before++
-		}
-	}
-	eprintln('> DEBUG: is_empty fns before contributions: ${is_empty_count_before}')
-
-	mut valid_cached := []string{}
-	mut failed_cached := []string{}
+	// TEMPORARILY DISABLED: Parse cache loading causes type resolution issues
+	// Just parse all cached files fresh for now - this still populates the cache for future
+	eprintln('> Parse cache: (disabled) ${cached_paths.len} files will be parsed fresh')
 	for path in cached_paths {
-		if contributions := b.parse_cache.load_contributions(path) {
-			register_contributions(mut b.table, &contributions)
-			valid_cached << path
-		} else {
-			// Contribution load failed, will need to parse
-			eprintln('> Parse cache: contribution load failed for ${path}')
-			failed_cached << path
-		}
-	}
-	eprintln('> Parse cache: ${valid_cached.len} contributions loaded, ${failed_cached.len} failed')
-	// Debug: check for is_empty in table
-	for fkey, _ in b.table.fns {
-		if fkey.contains('is_empty') {
-			eprintln('> DEBUG: found fn ${fkey}')
-		}
-	}
-
-	// PASS 2b: Now load ASTs (all contributions already registered)
-	eprintln('> PASS 2b: loading ${valid_cached.len} ASTs')
-	for i, path in valid_cached {
-		if file := b.parse_cache.load_ast(path, b.table) {
-			if b.table.filelist.index(path) == -1 {
-				b.table.filelist << path
-			}
-			files << file
-			if i < 5 {
-				eprintln('> loaded AST ${i}: ${path}')
-			}
-		} else {
-			eprintln('> AST load failed for ${path}, re-parsing')
-			// AST load failed - contributions were already registered.
-			// Re-parse the file to get the AST
-			file := parser.parse_file(path, mut b.table, .skip_comments, b.pref)
-			files << file
-		}
-	}
-	eprintln('> PASS 2b: done loading ASTs')
-
-	// PASS 3: Parse any files that failed cache loading
-	for path in failed_cached {
 		file := b.parse_and_cache_file(path)
 		files << file
 	}
