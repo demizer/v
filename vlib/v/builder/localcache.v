@@ -103,6 +103,9 @@ fn (mut lc LocalCache) load_manifest() {
 
 	// Check if vhash or vopts changed - if so, invalidate entire cache
 	if manifest.vhash != lc.vhash || manifest.vopts != lc.vopts {
+		eprintln('> DEBUG: Cache invalidated! vhash match=${manifest.vhash == lc.vhash}, vopts match=${manifest.vopts == lc.vopts}')
+		eprintln('> DEBUG: manifest.vopts=${manifest.vopts}')
+		eprintln('> DEBUG: lc.vopts=${lc.vopts}')
 		return
 	}
 	lc.manifest = manifest

@@ -112,7 +112,8 @@ pub fn new_builder(pref_ &pref.Preferences) Builder {
 		enabled: false
 	}
 	if pref_.use_local_cache {
-		cache_dir := os.join_path(compiled_dir, '.vcache')
+		// Use project root .vcache directory (where v is invoked from)
+		cache_dir := os.join_path(os.getwd(), '.vcache')
 		vhash := @VHASH
 		pc = new_parse_cache(cache_dir, vhash)
 	}
@@ -246,29 +247,82 @@ fn (mut b Builder) parse_files_with_cache(paths []string) []&ast.File {
 		}
 	}
 
+	// Debug: check built-in methods before any parsing
+	eprintln('> DEBUG: table type_symbols before parsing: ${b.table.type_symbols.len}')
+	for ts in b.table.type_symbols {
+		if ts.kind == .@enum && ts.methods.len > 0 {
+			for m in ts.methods {
+				if m.name == 'is_empty' {
+					eprintln('> DEBUG: built-in is_empty found on enum ${ts.name}')
+				}
+			}
+		}
+	}
+
 	// PASS 1: Parse fresh files first (this registers their types in the table)
 	mut files := []&ast.File{cap: paths.len}
+	eprintln('> Parse cache: ${cached_paths.len} cached, ${parse_paths.len} to parse')
 	for path in parse_paths {
 		file := b.parse_and_cache_file(path)
 		files << file
 	}
 
-	// PASS 2: Try to load from cache; if AST fails, fall back to parsing
-	// Note: We try to load full cache entry (contributions + AST) together
-	// If AST fails due to unresolved types, we parse normally (which registers types properly)
+	// PASS 2a: Load ALL contributions from cached files first
+	// This ensures all functions/types are registered before AST deserialization
+	// Debug: check table state before contributions
+	mut is_empty_count_before := 0
+	for fkey, _ in b.table.fns {
+		if fkey.contains('is_empty') {
+			is_empty_count_before++
+		}
+	}
+	eprintln('> DEBUG: is_empty fns before contributions: ${is_empty_count_before}')
+
+	mut valid_cached := []string{}
+	mut failed_cached := []string{}
 	for path in cached_paths {
-		if cached := b.parse_cache.load(path, b.table) {
-			// Successfully loaded from cache - register contributions
-			register_contributions(mut b.table, &cached.contributions)
+		if contributions := b.parse_cache.load_contributions(path) {
+			register_contributions(mut b.table, &contributions)
+			valid_cached << path
+		} else {
+			// Contribution load failed, will need to parse
+			eprintln('> Parse cache: contribution load failed for ${path}')
+			failed_cached << path
+		}
+	}
+	eprintln('> Parse cache: ${valid_cached.len} contributions loaded, ${failed_cached.len} failed')
+	// Debug: check for is_empty in table
+	for fkey, _ in b.table.fns {
+		if fkey.contains('is_empty') {
+			eprintln('> DEBUG: found fn ${fkey}')
+		}
+	}
+
+	// PASS 2b: Now load ASTs (all contributions already registered)
+	eprintln('> PASS 2b: loading ${valid_cached.len} ASTs')
+	for i, path in valid_cached {
+		if file := b.parse_cache.load_ast(path, b.table) {
 			if b.table.filelist.index(path) == -1 {
 				b.table.filelist << path
 			}
-			files << cached.file
+			files << file
+			if i < 5 {
+				eprintln('> loaded AST ${i}: ${path}')
+			}
 		} else {
-			// Cache load failed (likely unresolved types), parse normally
-			file := b.parse_and_cache_file(path)
+			eprintln('> AST load failed for ${path}, re-parsing')
+			// AST load failed - contributions were already registered.
+			// Re-parse the file to get the AST
+			file := parser.parse_file(path, mut b.table, .skip_comments, b.pref)
 			files << file
 		}
+	}
+	eprintln('> PASS 2b: done loading ASTs')
+
+	// PASS 3: Parse any files that failed cache loading
+	for path in failed_cached {
+		file := b.parse_and_cache_file(path)
+		files << file
 	}
 
 	// Handle any codegen files that were generated during parsing

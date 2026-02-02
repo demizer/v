@@ -24,6 +24,8 @@ fn local_cache_cc(mut b builder.Builder, result c.GenOutput) ! {
 	os.mkdir_all(cache_dir) or {}
 
 	vhash := @VHASH
+	eprintln('> DEBUG: vhash=${vhash}')
+	eprintln('> DEBUG: build_options=${b.pref.build_options}')
 	mut lc := builder.new_local_cache(cache_dir, vhash, b.pref.build_options)
 
 	// Group files by module

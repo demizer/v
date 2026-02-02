@@ -273,6 +273,8 @@ pub fn (pc &ParseCache) print_stats() {
 
 // register_contributions registers cached table contributions back into the table
 pub fn register_contributions(mut table ast.Table, contributions &ast.TableContributions) {
+	eprintln('> register_contributions: ${contributions.type_symbols.len} types, ${contributions.functions.len} fns')
+
 	// Build remap table: old_idx -> new_idx
 	mut remap := map[int]int{}
 	for old_idx, type_name in contributions.type_names {
@@ -281,6 +283,7 @@ pub fn register_contributions(mut table ast.Table, contributions &ast.TableContr
 			remap[old_idx] = new_idx
 		}
 	}
+	eprintln('> register_contributions: remap built')
 
 	// Register type symbols with remapped types
 	for ts in contributions.type_symbols {
@@ -292,9 +295,10 @@ pub fn register_contributions(mut table ast.Table, contributions &ast.TableContr
 		remapped_ts := remap_type_symbol(ts, remap)
 		table.register_sym(remapped_ts)
 	}
+	eprintln('> register_contributions: types registered')
 
 	// Register functions with remapped types
-	for f in contributions.functions {
+	for i, f in contributions.functions {
 		remapped_f := remap_fn(f, remap)
 		fkey := if remapped_f.is_method {
 			'${int(remapped_f.receiver_type)}.${remapped_f.name}'
@@ -305,8 +309,12 @@ pub fn register_contributions(mut table ast.Table, contributions &ast.TableContr
 		if fkey in table.fns {
 			continue
 		}
+		if f.name == 'is_empty' {
+			eprintln('> registering is_empty: orig_recv=${int(f.receiver_type)} -> remapped_recv=${int(remapped_f.receiver_type)}, fkey=${fkey}')
+		}
 		table.fns[fkey] = remapped_f
 	}
+	eprintln('> register_contributions: fns registered')
 }
 
 // remap_type remaps a Type index using the remap table
