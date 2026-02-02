@@ -7,7 +7,7 @@ import v.token
 
 // Magic bytes for cache file identification
 const cache_magic = [u8(`V`), `A`, `S`, `T`]
-const cache_version = u32(8)
+const cache_version = u32(9)
 
 // ExprKind discriminator for Expr sumtype variants
 pub enum ExprKind as u8 {
@@ -3491,6 +3491,28 @@ pub fn serialize_file(file &File, table &Table) []u8 {
 	// Write auto_imports
 	w.write_string_array(file.auto_imports)
 
+	// Write used_imports
+	w.write_string_array(file.used_imports)
+
+	// Write implied_imports
+	w.write_string_array(file.implied_imports)
+
+	// Write imported_symbols map
+	w.write_u32(u32(file.imported_symbols.len))
+	for key, val in file.imported_symbols {
+		w.write_string(key)
+		w.write_string(val)
+	}
+
+	// Write global_labels
+	w.write_string_array(file.global_labels)
+
+	// Write template_paths
+	w.write_string_array(file.template_paths)
+
+	// Write unique_prefix
+	w.write_string(file.unique_prefix)
+
 	// Write embedded files
 	w.write_u32(u32(file.embedded_files.len))
 	for ef in file.embedded_files {
@@ -3547,6 +3569,30 @@ pub fn deserialize_file(data []u8, table &Table) !&File {
 	// Read auto_imports
 	auto_imports := r.read_string_array()
 
+	// Read used_imports
+	used_imports := r.read_string_array()
+
+	// Read implied_imports
+	implied_imports := r.read_string_array()
+
+	// Read imported_symbols map
+	imported_symbols_len := r.read_u32()
+	mut imported_symbols := map[string]string{}
+	for _ in 0 .. imported_symbols_len {
+		key := r.read_string()
+		val := r.read_string()
+		imported_symbols[key] = val
+	}
+
+	// Read global_labels
+	global_labels := r.read_string_array()
+
+	// Read template_paths
+	template_paths := r.read_string_array()
+
+	// Read unique_prefix
+	unique_prefix := r.read_string()
+
 	// Read embedded files
 	ef_len := r.read_u32()
 	mut embedded_files := []EmbeddedFile{cap: int(ef_len)}
@@ -3566,34 +3612,691 @@ pub fn deserialize_file(data []u8, table &Table) !&File {
 		return error('unresolved type references - fallback to parsing required')
 	}
 
-	// Create empty scopes - scopes will need to be rebuilt by the caller
-	// Note: For now, we mark deserialization as failed because scopes aren't properly serialized
-	// TODO: Implement proper scope serialization or scope reconstruction
-	return error('scope reconstruction not implemented - fallback to parsing required')
-
-	// The code below would return a File with empty scopes, but this causes
-	// checker crashes because scopes aren't properly built
-	/*
-	global_scope := &Scope{}
-	return &File{
-		path:           path
-		path_base:      path_base
-		nr_lines:       nr_lines
-		nr_bytes:       nr_bytes
-		nr_tokens:      nr_tokens
-		is_test:        is_test
-		is_generated:   is_generated
-		is_translated:  is_translated
-		language:       language
-		mod:            mod
-		imports:        imports
-		auto_imports:   auto_imports
-		embedded_files: embedded_files
-		stmts:          stmts
-		global_scope:   global_scope
-		scope:          global_scope
+	// Create File with placeholder scopes (will be rebuilt below)
+	mut file := &File{
+		path:             path
+		path_base:        path_base
+		nr_lines:         nr_lines
+		nr_bytes:         nr_bytes
+		nr_tokens:        nr_tokens
+		is_test:          is_test
+		is_generated:     is_generated
+		is_translated:    is_translated
+		language:         language
+		mod:              mod
+		imports:          imports
+		auto_imports:     auto_imports
+		used_imports:     used_imports
+		implied_imports:  implied_imports
+		imported_symbols: imported_symbols
+		global_labels:    global_labels
+		template_paths:   template_paths
+		unique_prefix:    unique_prefix
+		embedded_files:   embedded_files
+		stmts:            stmts
+		global_scope:     table.global_scope
+		scope:            table.global_scope // placeholder, will be replaced
 	}
-	*/
+
+	// Rebuild scope tree from AST
+	// We need mutable access to global_scope to add children
+	unsafe {
+		mut gs := table.global_scope
+		rebuild_scopes(mut file, mut gs)
+	}
+	return file
+}
+
+// --- Scope Reconstruction ---
+// Rebuild scope tree from deserialized AST
+
+// ScopeBuilder walks AST and reconstructs scope tree
+struct ScopeBuilder {
+mut:
+	current_scope &Scope = unsafe { nil }
+}
+
+// rebuild_scopes reconstructs the scope tree for a deserialized file
+pub fn rebuild_scopes(mut file File, mut global_scope Scope) {
+	// Create file-level scope
+	file_scope := &Scope{
+		parent:    global_scope
+		start_pos: 0
+		end_pos:   file.nr_bytes
+	}
+	global_scope.children << file_scope
+	file.scope = file_scope
+	// Force write to immutable global_scope field (pub: fields can't be modified normally)
+	unsafe {
+		mut ptr := &file.global_scope
+		*ptr = global_scope
+	}
+	mut builder := ScopeBuilder{
+		current_scope: file_scope
+	}
+
+	// Walk all statements to rebuild scopes
+	for mut stmt in file.stmts {
+		builder.walk_stmt(mut stmt)
+	}
+}
+
+fn (mut b ScopeBuilder) open_scope(start_pos int) &Scope {
+	new_scope := &Scope{
+		parent:    b.current_scope
+		start_pos: start_pos
+	}
+	b.current_scope.children << new_scope
+	b.current_scope = new_scope
+	return new_scope
+}
+
+fn (mut b ScopeBuilder) close_scope(end_pos int) {
+	b.current_scope.end_pos = end_pos
+	b.current_scope = b.current_scope.parent
+}
+
+fn (mut b ScopeBuilder) register_var(v Var) {
+	b.current_scope.register(ScopeObject(v))
+}
+
+fn (mut b ScopeBuilder) walk_stmt(mut stmt Stmt) {
+	match mut stmt {
+		FnDecl {
+			b.walk_fn_decl(mut stmt)
+		}
+		ForStmt {
+			b.walk_for_stmt(mut stmt)
+		}
+		ForInStmt {
+			b.walk_for_in_stmt(mut stmt)
+		}
+		ForCStmt {
+			b.walk_for_c_stmt(mut stmt)
+		}
+		ExprStmt {
+			b.walk_expr(mut stmt.expr)
+		}
+		AssignStmt {
+			b.walk_assign_stmt(mut stmt)
+		}
+		Return {
+			for mut expr in stmt.exprs {
+				b.walk_expr(mut expr)
+			}
+		}
+		Block {
+			b.walk_block(mut stmt)
+		}
+		DeferStmt {
+			for mut s in stmt.stmts {
+				b.walk_stmt(mut s)
+			}
+		}
+		StructDecl {
+			// No scope needed for struct declarations
+		}
+		EnumDecl {
+			// No scope needed for enum declarations
+		}
+		InterfaceDecl {
+			// No scope needed for interface declarations
+		}
+		ConstDecl {
+			// Constants go to global scope, handled elsewhere
+		}
+		GlobalDecl {
+			// Globals go to global scope, handled elsewhere
+		}
+		Import {
+			// No scope needed for imports
+		}
+		Module {
+			// No scope needed for module declaration
+		}
+		TypeDecl {
+			// No scope needed for type declarations
+		}
+		HashStmt {
+			// No scope for hash statements
+		}
+		ComptimeFor {
+			b.walk_comptime_for(mut stmt)
+		}
+		AssertStmt {
+			b.walk_expr(mut stmt.expr)
+		}
+		AsmStmt {
+			// ASM has its own handling
+		}
+		BranchStmt {
+			// break/continue - no scope
+		}
+		GotoStmt {
+			// goto - no scope
+		}
+		GotoLabel {
+			// label - no scope
+		}
+		SqlStmt {
+			// SQL statements
+		}
+		NodeError {
+			// Error node
+		}
+		EmptyStmt {
+			// Empty statement
+		}
+		SemicolonStmt {
+			// Semicolon
+		}
+		DebuggerStmt {
+			// Debugger
+		}
+	}
+}
+
+fn (mut b ScopeBuilder) walk_fn_decl(mut fn_decl FnDecl) {
+	// Create scope for function body (FnDecl.scope is immutable - pub: field)
+	scope := b.open_scope(fn_decl.body_pos.pos)
+	unsafe {
+		mut ptr := &fn_decl.scope
+		*ptr = scope
+	}
+	// Register parameters in function scope
+	for param in fn_decl.params {
+		is_stack_obj := !param.typ.has_flag(.shared_f) && (param.is_mut || param.typ.is_ptr())
+		b.register_var(Var{
+			name:          param.name
+			typ:           param.typ
+			is_mut:        param.is_mut
+			is_auto_deref: param.is_mut
+			is_stack_obj:  is_stack_obj
+			is_arg:        true
+			pos:           param.pos
+		})
+	}
+
+	// Register receiver if this is a method
+	if fn_decl.is_method && fn_decl.receiver.name.len > 0 {
+		b.register_var(Var{
+			name:          fn_decl.receiver.name
+			typ:           fn_decl.receiver.typ
+			is_mut:        fn_decl.receiver.is_mut
+			is_auto_deref: fn_decl.receiver.is_mut
+			is_arg:        true
+			pos:           fn_decl.receiver.pos
+		})
+	}
+
+	// Walk function body
+	for mut stmt in fn_decl.stmts {
+		b.walk_stmt(mut stmt)
+	}
+
+	b.close_scope(fn_decl.body_pos.pos + fn_decl.body_pos.len)
+}
+
+fn (mut b ScopeBuilder) walk_for_stmt(mut for_stmt ForStmt) {
+	for_stmt.scope = b.open_scope(for_stmt.pos.pos)
+
+	// Walk condition
+	b.walk_expr(mut for_stmt.cond)
+
+	// Walk body
+	for mut stmt in for_stmt.stmts {
+		b.walk_stmt(mut stmt)
+	}
+
+	b.close_scope(for_stmt.pos.pos + for_stmt.pos.len)
+}
+
+fn (mut b ScopeBuilder) walk_for_in_stmt(mut for_in ForInStmt) {
+	for_in.scope = b.open_scope(for_in.pos.pos)
+
+	// Register loop variables
+	if for_in.key_var.len > 0 && for_in.key_var != '_' {
+		b.register_var(Var{
+			name:         for_in.key_var
+			typ:          for_in.key_type
+			pos:          for_in.pos
+			is_tmp:       true
+			is_stack_obj: true
+		})
+	}
+
+	if for_in.val_var.len > 0 && for_in.val_var != '_' {
+		b.register_var(Var{
+			name:          for_in.val_var
+			typ:           for_in.val_type
+			is_mut:        for_in.val_is_mut
+			is_auto_deref: for_in.val_is_mut
+			pos:           for_in.pos
+			is_tmp:        true
+			is_stack_obj:  true
+		})
+	}
+
+	// Walk body
+	for mut stmt in for_in.stmts {
+		b.walk_stmt(mut stmt)
+	}
+
+	b.close_scope(for_in.pos.pos + for_in.pos.len)
+}
+
+fn (mut b ScopeBuilder) walk_for_c_stmt(mut for_c ForCStmt) {
+	for_c.scope = b.open_scope(for_c.pos.pos)
+
+	// Walk init, cond, inc
+	if for_c.has_init {
+		b.walk_stmt(mut for_c.init)
+	}
+	if for_c.has_cond {
+		b.walk_expr(mut for_c.cond)
+	}
+	if for_c.has_inc {
+		b.walk_stmt(mut for_c.inc)
+	}
+
+	// Walk body
+	for mut stmt in for_c.stmts {
+		b.walk_stmt(mut stmt)
+	}
+
+	b.close_scope(for_c.pos.pos + for_c.pos.len)
+}
+
+fn (mut b ScopeBuilder) walk_block(mut block Block) {
+	scope := b.open_scope(block.pos.pos)
+	// Block.scope is immutable (pub: field)
+	unsafe {
+		mut ptr := &block.scope
+		*ptr = scope
+	}
+	for mut stmt in block.stmts {
+		b.walk_stmt(mut stmt)
+	}
+
+	b.close_scope(block.pos.pos + block.pos.len)
+}
+
+fn (mut b ScopeBuilder) walk_comptime_for(mut cf ComptimeFor) {
+	// ComptimeFor.scope is immutable (pub: field)
+	scope := b.open_scope(cf.pos.pos)
+	unsafe {
+		mut ptr := &cf.scope
+		*ptr = scope
+	}
+	// Register comptime loop variable
+	if cf.val_var.len > 0 {
+		b.register_var(Var{
+			name: cf.val_var
+			typ:  cf.typ
+			pos:  cf.pos
+		})
+	}
+
+	// Walk body
+	for mut stmt in cf.stmts {
+		b.walk_stmt(mut stmt)
+	}
+
+	b.close_scope(cf.pos.pos + cf.pos.len)
+}
+
+fn (mut b ScopeBuilder) walk_assign_stmt(mut assign AssignStmt) {
+	// Walk right side first
+	for mut expr in assign.right {
+		b.walk_expr(mut expr)
+	}
+
+	// For declaration assignments (:=), register new variables
+	if assign.op == .decl_assign {
+		for i, left in assign.left {
+			if left is Ident {
+				ident := left as Ident
+				if ident.name != '_' {
+					mut typ := void_type
+					if i < assign.right_types.len {
+						typ = assign.right_types[i]
+					}
+					v := Var{
+						name:   ident.name
+						typ:    typ
+						is_mut: ident.is_mut
+						pos:    ident.pos
+						expr:   if i < assign.right.len { assign.right[i] } else { empty_expr }
+					}
+					b.register_var(v)
+				}
+			}
+		}
+	}
+}
+
+fn (mut b ScopeBuilder) walk_expr(mut expr Expr) {
+	match mut expr {
+		IfExpr {
+			b.walk_if_expr(mut expr)
+		}
+		MatchExpr {
+			b.walk_match_expr(mut expr)
+		}
+		LambdaExpr {
+			b.walk_lambda_expr(mut expr)
+		}
+		AnonFn {
+			b.walk_anon_fn(mut expr)
+		}
+		OrExpr {
+			b.walk_or_expr(mut expr)
+		}
+		CallExpr {
+			for mut arg in expr.args {
+				b.walk_expr(mut arg.expr)
+			}
+			b.walk_expr(mut expr.left)
+			b.walk_or_expr(mut expr.or_block)
+		}
+		IndexExpr {
+			b.walk_expr(mut expr.left)
+			b.walk_expr(mut expr.index)
+			b.walk_or_expr(mut expr.or_expr)
+		}
+		SelectorExpr {
+			b.walk_expr(mut expr.expr)
+			b.walk_or_expr(mut expr.or_block)
+		}
+		InfixExpr {
+			b.walk_expr(mut expr.left)
+			b.walk_expr(mut expr.right)
+			b.walk_or_expr(mut expr.or_block)
+		}
+		PrefixExpr {
+			b.walk_expr(mut expr.right)
+			b.walk_or_expr(mut expr.or_block)
+		}
+		PostfixExpr {
+			b.walk_expr(mut expr.expr)
+		}
+		ParExpr {
+			b.walk_expr(mut expr.expr)
+		}
+		CastExpr {
+			b.walk_expr(mut expr.expr)
+		}
+		ArrayInit {
+			for mut e in expr.exprs {
+				b.walk_expr(mut e)
+			}
+			b.walk_expr(mut expr.len_expr)
+			b.walk_expr(mut expr.cap_expr)
+			b.walk_expr(mut expr.init_expr)
+		}
+		MapInit {
+			for mut k in expr.keys {
+				b.walk_expr(mut k)
+			}
+			for mut v in expr.vals {
+				b.walk_expr(mut v)
+			}
+		}
+		StructInit {
+			for mut init_field in expr.init_fields {
+				b.walk_expr(mut init_field.expr)
+			}
+		}
+		ComptimeCall {
+			for mut arg in expr.args {
+				b.walk_expr(mut arg.expr)
+			}
+		}
+		ComptimeSelector {
+			b.walk_expr(mut expr.left)
+		}
+		ConcatExpr {
+			for mut val in expr.vals {
+				b.walk_expr(mut val)
+			}
+		}
+		StringInterLiteral {
+			for mut e in expr.exprs {
+				b.walk_expr(mut e)
+			}
+		}
+		UnsafeExpr {
+			b.walk_expr(mut expr.expr)
+		}
+		LockExpr {
+			b.walk_lock_expr(mut expr)
+		}
+		SelectExpr {
+			b.walk_select_expr(mut expr)
+		}
+		GoExpr {
+			b.walk_expr(mut expr.call_expr)
+		}
+		SpawnExpr {
+			b.walk_expr(mut expr.call_expr)
+		}
+		RangeExpr {
+			b.walk_expr(mut expr.low)
+			b.walk_expr(mut expr.high)
+		}
+		OffsetOf {
+			// No nested expressions
+		}
+		SizeOf {
+			b.walk_expr(mut expr.expr)
+		}
+		TypeOf {
+			b.walk_expr(mut expr.expr)
+		}
+		IsRefType {
+			b.walk_expr(mut expr.expr)
+		}
+		DumpExpr {
+			b.walk_expr(mut expr.expr)
+		}
+		Likely {
+			b.walk_expr(mut expr.expr)
+		}
+		AsCast {
+			b.walk_expr(mut expr.expr)
+		}
+		SqlExpr {
+			// SQL expressions
+		}
+		Assoc {
+			for mut e in expr.exprs {
+				b.walk_expr(mut e)
+			}
+		}
+		AtExpr {
+			// @ expressions
+		}
+		CharLiteral {
+			// Literal
+		}
+		BoolLiteral {
+			// Literal
+		}
+		IntegerLiteral {
+			// Literal
+		}
+		FloatLiteral {
+			// Literal
+		}
+		StringLiteral {
+			// Literal
+		}
+		Ident {
+			// Identifier
+		}
+		EnumVal {
+			// Enum value
+		}
+		TypeNode {
+			// Type node
+		}
+		None {
+			// None literal
+		}
+		Nil {
+			// Nil literal
+		}
+		ComptimeType {
+			// Comptime type
+		}
+		ArrayDecompose {
+			b.walk_expr(mut expr.expr)
+		}
+		IfGuardExpr {
+			// IfGuardVar has no expr field, only expr.expr
+			b.walk_expr(mut expr.expr)
+		}
+		ChanInit {
+			b.walk_expr(mut expr.cap_expr)
+		}
+		EmptyExpr {
+			// Empty
+		}
+		CTempVar {
+			// Comptime temp var
+		}
+		NodeError {
+			// Error node
+		}
+		Comment {
+			// Comment
+		}
+	}
+}
+
+fn (mut b ScopeBuilder) walk_if_expr(mut if_expr IfExpr) {
+	for mut branch in if_expr.branches {
+		branch.scope = b.open_scope(branch.pos.pos)
+
+		// If this is an if-guard, register the variables
+		if branch.cond is IfGuardExpr {
+			guard := branch.cond as IfGuardExpr
+			for var in guard.vars {
+				b.register_var(Var{
+					name:   var.name
+					is_mut: var.is_mut
+					pos:    var.pos
+				})
+			}
+		}
+
+		// Walk condition
+		b.walk_expr(mut branch.cond)
+
+		// Walk body
+		for mut stmt in branch.stmts {
+			b.walk_stmt(mut stmt)
+		}
+
+		b.close_scope(branch.pos.pos + branch.pos.len)
+	}
+}
+
+fn (mut b ScopeBuilder) walk_match_expr(mut match_expr MatchExpr) {
+	// Walk the condition being matched
+	b.walk_expr(mut match_expr.cond)
+
+	for mut branch in match_expr.branches {
+		branch.scope = b.open_scope(branch.pos.pos)
+
+		// Walk body
+		for mut stmt in branch.stmts {
+			b.walk_stmt(mut stmt)
+		}
+
+		b.close_scope(branch.pos.pos + branch.pos.len)
+	}
+}
+
+fn (mut b ScopeBuilder) walk_lambda_expr(mut lambda LambdaExpr) {
+	lambda.scope = b.open_scope(lambda.pos.pos)
+
+	// Register lambda parameters
+	for param in lambda.params {
+		b.register_var(Var{
+			name:         param.name
+			is_mut:       param.is_mut
+			is_stack_obj: true
+			pos:          param.pos
+			is_used:      true
+		})
+	}
+
+	// Walk lambda body expression
+	b.walk_expr(mut lambda.expr)
+
+	b.close_scope(lambda.pos.pos + lambda.pos.len)
+}
+
+fn (mut b ScopeBuilder) walk_anon_fn(mut anon AnonFn) {
+	// Anonymous functions have their own fn_decl
+	b.walk_fn_decl(mut anon.decl)
+}
+
+fn (mut b ScopeBuilder) walk_or_expr(mut or_expr OrExpr) {
+	if or_expr.stmts.len == 0 {
+		return
+	}
+
+	// OrExpr.scope is immutable (pub: field)
+	scope := b.open_scope(or_expr.pos.pos)
+	unsafe {
+		mut ptr := &or_expr.scope
+		*ptr = scope
+	}
+	// Register 'err' variable in or-block scope
+	if or_expr.kind == .block {
+		b.register_var(Var{
+			name:         'err'
+			typ:          error_type
+			pos:          or_expr.pos
+			is_used:      false
+			is_stack_obj: true
+		})
+	}
+
+	for mut stmt in or_expr.stmts {
+		b.walk_stmt(mut stmt)
+	}
+
+	b.close_scope(or_expr.pos.pos + or_expr.pos.len)
+}
+
+fn (mut b ScopeBuilder) walk_lock_expr(mut lock_expr LockExpr) {
+	lock_expr.scope = b.open_scope(lock_expr.pos.pos)
+
+	for mut stmt in lock_expr.stmts {
+		b.walk_stmt(mut stmt)
+	}
+
+	b.close_scope(lock_expr.pos.pos + lock_expr.pos.len)
+}
+
+fn (mut b ScopeBuilder) walk_select_expr(mut select_expr SelectExpr) {
+	for mut branch in select_expr.branches {
+		// SelectBranch.scope is immutable (pub: field)
+		scope := b.open_scope(branch.pos.pos)
+		unsafe {
+			mut ptr := &branch.scope
+			*ptr = scope
+		}
+		// Walk body
+		for mut stmt in branch.stmts {
+			b.walk_stmt(mut stmt)
+		}
+
+		b.close_scope(branch.pos.pos + branch.pos.len)
+	}
 }
 
 // --- Table Contributions Serialization ---
