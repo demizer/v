@@ -7,7 +7,7 @@ import v.token
 
 // Magic bytes for cache file identification
 const cache_magic = [u8(`V`), `A`, `S`, `T`]
-const cache_version = u32(5)
+const cache_version = u32(7)
 
 // ExprKind discriminator for Expr sumtype variants
 pub enum ExprKind as u8 {
@@ -147,7 +147,7 @@ fn (mut w AstWriter) write_u16(n u16) {
 }
 
 // write_u32 writes a u32 value (little-endian)
-fn (mut w AstWriter) write_u32(n u32) {
+pub fn (mut w AstWriter) write_u32(n u32) {
 	w.buf << u8(n)
 	w.buf << u8(n >> 8)
 	w.buf << u8(n >> 16)
@@ -202,7 +202,7 @@ fn (mut r AstReader) read_u16() u16 {
 }
 
 // read_u32 reads a u32 value (little-endian)
-fn (mut r AstReader) read_u32() u32 {
+pub fn (mut r AstReader) read_u32() u32 {
 	result := fb.get_u32(r.data[r.pos..])
 	r.pos += 4
 	return result
@@ -3396,5 +3396,812 @@ pub fn deserialize_file(data []u8) !&File {
 		auto_imports:   auto_imports
 		embedded_files: embedded_files
 		stmts:          stmts
+	}
+}
+
+// --- Table Contributions Serialization ---
+// These are the types/functions that a file contributes to the shared ast.Table
+
+// TableContributions holds what a file contributes to ast.Table
+pub struct TableContributions {
+pub mut:
+	type_symbols []TypeSymbol   // types defined in this file
+	functions    []Fn           // functions defined in this file
+	type_names   map[int]string // type index -> fully qualified name (for remapping)
+}
+
+// TypeInfoKind enum for serialization dispatch
+enum TypeInfoKind as u8 {
+	unknown
+	alias
+	array
+	array_fixed
+	chan_
+	enum_
+	fn_type
+	generic_inst
+	interface_
+	map_
+	multi_return
+	struct_
+	sum_type
+	thread
+	aggregate
+}
+
+// write_table_contributions serializes table contributions
+pub fn (mut w AstWriter) write_table_contributions(tc &TableContributions) {
+	// Write type symbols
+	w.write_u32(u32(tc.type_symbols.len))
+	for ts in tc.type_symbols {
+		w.write_type_symbol(ts)
+	}
+	// Write functions
+	w.write_u32(u32(tc.functions.len))
+	for f in tc.functions {
+		w.write_fn(f)
+	}
+	// Write type_names map for type index remapping
+	w.write_u32(u32(tc.type_names.len))
+	for idx, name in tc.type_names {
+		w.write_i32(idx)
+		w.write_string(name)
+	}
+}
+
+// read_table_contributions deserializes table contributions
+pub fn (mut r AstReader) read_table_contributions() TableContributions {
+	// Read type symbols
+	ts_len := r.read_u32()
+	mut type_symbols := []TypeSymbol{cap: int(ts_len)}
+	for _ in 0 .. ts_len {
+		type_symbols << r.read_type_symbol()
+	}
+	// Read functions
+	fn_len := r.read_u32()
+	mut functions := []Fn{cap: int(fn_len)}
+	for _ in 0 .. fn_len {
+		functions << r.read_fn()
+	}
+	// Read type_names map
+	tn_len := r.read_u32()
+	mut type_names := map[int]string{}
+	for _ in 0 .. tn_len {
+		idx := r.read_i32()
+		name := r.read_string()
+		type_names[idx] = name
+	}
+	return TableContributions{
+		type_symbols: type_symbols
+		functions:    functions
+		type_names:   type_names
+	}
+}
+
+// --- TypeSymbol Serialization ---
+
+fn (mut w AstWriter) write_type_symbol(ts TypeSymbol) {
+	w.write_i32(ts.parent_idx)
+	w.write_u8(u8(ts.kind))
+	w.write_string(ts.name)
+	w.write_string(ts.cname)
+	w.write_string(ts.rname)
+	w.write_string(ts.ngname)
+	w.write_string(ts.mod)
+	w.write_bool(ts.is_pub)
+	w.write_bool(ts.is_builtin)
+	w.write_u8(u8(ts.language))
+	w.write_i32(ts.idx)
+	w.write_i32(ts.size)
+	w.write_i32(ts.align)
+	// Write generic_types
+	w.write_type_array(ts.generic_types)
+	// Write methods
+	w.write_u32(u32(ts.methods.len))
+	for m in ts.methods {
+		w.write_fn(m)
+	}
+	// Write TypeInfo
+	w.write_type_info(ts.info)
+}
+
+fn (mut r AstReader) read_type_symbol() TypeSymbol {
+	parent_idx := r.read_i32()
+	kind := unsafe { Kind(r.read_u8()) }
+	name := r.read_string()
+	cname := r.read_string()
+	rname := r.read_string()
+	ngname := r.read_string()
+	mod := r.read_string()
+	is_pub := r.read_bool()
+	is_builtin := r.read_bool()
+	language := unsafe { Language(r.read_u8()) }
+	idx := r.read_i32()
+	size := r.read_i32()
+	align := r.read_i32()
+	generic_types := r.read_type_array()
+	// Read methods
+	methods_len := r.read_u32()
+	mut methods := []Fn{cap: int(methods_len)}
+	for _ in 0 .. methods_len {
+		methods << r.read_fn()
+	}
+	info := r.read_type_info()
+	return TypeSymbol{
+		parent_idx:    parent_idx
+		kind:          kind
+		name:          name
+		cname:         cname
+		rname:         rname
+		ngname:        ngname
+		mod:           mod
+		is_pub:        is_pub
+		is_builtin:    is_builtin
+		language:      language
+		idx:           idx
+		size:          size
+		align:         align
+		generic_types: generic_types
+		methods:       methods
+		info:          info
+	}
+}
+
+// --- TypeInfo Serialization ---
+
+fn (mut w AstWriter) write_type_info(info TypeInfo) {
+	match info {
+		UnknownTypeInfo {
+			w.write_u8(u8(TypeInfoKind.unknown))
+		}
+		Alias {
+			w.write_u8(u8(TypeInfoKind.alias))
+			w.write_type(info.parent_type)
+			w.write_u8(u8(info.language))
+			w.write_bool(info.is_import)
+			w.write_pos(info.name_pos)
+		}
+		Array {
+			w.write_u8(u8(TypeInfoKind.array))
+			w.write_i32(info.nr_dims)
+			w.write_type(info.elem_type)
+		}
+		ArrayFixed {
+			w.write_u8(u8(TypeInfoKind.array_fixed))
+			w.write_i32(info.size)
+			w.write_type(info.elem_type)
+			w.write_bool(info.is_fn_ret)
+			// Skip size_expr for now (complex)
+		}
+		Chan {
+			w.write_u8(u8(TypeInfoKind.chan_))
+			w.write_type(info.elem_type)
+			w.write_bool(info.is_mut)
+		}
+		Enum {
+			w.write_u8(u8(TypeInfoKind.enum_))
+			w.write_string_array(info.vals)
+			w.write_bool(info.is_flag)
+			w.write_bool(info.is_multi_allowed)
+			w.write_bool(info.uses_exprs)
+			w.write_type(info.typ)
+			w.write_pos(info.name_pos)
+			// Skip attrs map for now
+		}
+		FnType {
+			w.write_u8(u8(TypeInfoKind.fn_type))
+			w.write_bool(info.is_anon)
+			w.write_bool(info.has_decl)
+			w.write_fn(info.func)
+		}
+		GenericInst {
+			w.write_u8(u8(TypeInfoKind.generic_inst))
+			w.write_i32(info.parent_idx)
+			w.write_type_array(info.concrete_types)
+		}
+		Interface {
+			w.write_u8(u8(TypeInfoKind.interface_))
+			w.write_type_array(info.types)
+			w.write_struct_field_array(info.fields)
+			w.write_u32(u32(info.methods.len))
+			for m in info.methods {
+				w.write_fn(m)
+			}
+			w.write_type_array(info.embeds)
+			w.write_bool(info.is_generic)
+			w.write_bool(info.is_markused)
+			w.write_type_array(info.generic_types)
+			w.write_type_array(info.concrete_types)
+			w.write_type(info.parent_type)
+			w.write_pos(info.name_pos)
+		}
+		Map {
+			w.write_u8(u8(TypeInfoKind.map_))
+			w.write_type(info.key_type)
+			w.write_type(info.value_type)
+			w.write_pos(info.name_pos)
+		}
+		MultiReturn {
+			w.write_u8(u8(TypeInfoKind.multi_return))
+			w.write_type_array(info.types)
+		}
+		Struct {
+			w.write_u8(u8(TypeInfoKind.struct_))
+			w.write_attr_array(info.attrs)
+			w.write_string(info.scoped_name)
+			w.write_type_array(info.embeds)
+			w.write_struct_field_array(info.fields)
+			w.write_bool(info.is_typedef)
+			w.write_bool(info.is_union)
+			w.write_bool(info.is_heap)
+			w.write_bool(info.is_minify)
+			w.write_bool(info.is_anon)
+			w.write_bool(info.is_generic)
+			w.write_bool(info.is_shared)
+			w.write_bool(info.is_markused)
+			w.write_bool(info.has_option)
+			w.write_type_array(info.generic_types)
+			w.write_type_array(info.concrete_types)
+			w.write_type(info.parent_type)
+			w.write_pos(info.name_pos)
+		}
+		SumType {
+			w.write_u8(u8(TypeInfoKind.sum_type))
+			w.write_struct_field_array(info.fields)
+			w.write_bool(info.found_fields)
+			w.write_bool(info.is_anon)
+			w.write_bool(info.is_generic)
+			w.write_type_array(info.variants)
+			w.write_type_array(info.generic_types)
+			w.write_type_array(info.concrete_types)
+			w.write_type(info.parent_type)
+			w.write_pos(info.name_pos)
+		}
+		Thread {
+			w.write_u8(u8(TypeInfoKind.thread))
+			w.write_type(info.return_type)
+		}
+		Aggregate {
+			w.write_u8(u8(TypeInfoKind.aggregate))
+			w.write_struct_field_array(info.fields)
+			w.write_type(info.sum_type)
+			w.write_type_array(info.types)
+		}
+	}
+}
+
+fn (mut r AstReader) read_type_info() TypeInfo {
+	info_kind := unsafe { TypeInfoKind(r.read_u8()) }
+	match info_kind {
+		.unknown {
+			return UnknownTypeInfo{}
+		}
+		.alias {
+			parent_type := r.read_type()
+			language := unsafe { Language(r.read_u8()) }
+			is_import := r.read_bool()
+			name_pos := r.read_pos()
+			return Alias{
+				parent_type: parent_type
+				language:    language
+				is_import:   is_import
+				name_pos:    name_pos
+			}
+		}
+		.array {
+			nr_dims := r.read_i32()
+			elem_type := r.read_type()
+			return Array{
+				nr_dims:   nr_dims
+				elem_type: elem_type
+			}
+		}
+		.array_fixed {
+			size := r.read_i32()
+			elem_type := r.read_type()
+			is_fn_ret := r.read_bool()
+			return ArrayFixed{
+				size:      size
+				elem_type: elem_type
+				is_fn_ret: is_fn_ret
+			}
+		}
+		.chan_ {
+			elem_type := r.read_type()
+			is_mut := r.read_bool()
+			return Chan{
+				elem_type: elem_type
+				is_mut:    is_mut
+			}
+		}
+		.enum_ {
+			vals := r.read_string_array()
+			is_flag := r.read_bool()
+			is_multi_allowed := r.read_bool()
+			uses_exprs := r.read_bool()
+			typ := r.read_type()
+			name_pos := r.read_pos()
+			return Enum{
+				vals:             vals
+				is_flag:          is_flag
+				is_multi_allowed: is_multi_allowed
+				uses_exprs:       uses_exprs
+				typ:              typ
+				name_pos:         name_pos
+			}
+		}
+		.fn_type {
+			is_anon := r.read_bool()
+			has_decl := r.read_bool()
+			func := r.read_fn()
+			return FnType{
+				is_anon:  is_anon
+				has_decl: has_decl
+				func:     func
+			}
+		}
+		.generic_inst {
+			parent_idx := r.read_i32()
+			concrete_types := r.read_type_array()
+			return GenericInst{
+				parent_idx:     parent_idx
+				concrete_types: concrete_types
+			}
+		}
+		.interface_ {
+			types := r.read_type_array()
+			fields := r.read_struct_field_array()
+			methods_len := r.read_u32()
+			mut methods := []Fn{cap: int(methods_len)}
+			for _ in 0 .. methods_len {
+				methods << r.read_fn()
+			}
+			embeds := r.read_type_array()
+			is_generic := r.read_bool()
+			is_markused := r.read_bool()
+			generic_types := r.read_type_array()
+			concrete_types := r.read_type_array()
+			parent_type := r.read_type()
+			name_pos := r.read_pos()
+			return Interface{
+				types:          types
+				fields:         fields
+				methods:        methods
+				embeds:         embeds
+				is_generic:     is_generic
+				is_markused:    is_markused
+				generic_types:  generic_types
+				concrete_types: concrete_types
+				parent_type:    parent_type
+				name_pos:       name_pos
+			}
+		}
+		.map_ {
+			key_type := r.read_type()
+			value_type := r.read_type()
+			name_pos := r.read_pos()
+			return Map{
+				key_type:   key_type
+				value_type: value_type
+				name_pos:   name_pos
+			}
+		}
+		.multi_return {
+			types := r.read_type_array()
+			return MultiReturn{
+				types: types
+			}
+		}
+		.struct_ {
+			attrs := r.read_attr_array()
+			scoped_name := r.read_string()
+			embeds := r.read_type_array()
+			fields := r.read_struct_field_array()
+			is_typedef := r.read_bool()
+			is_union := r.read_bool()
+			is_heap := r.read_bool()
+			is_minify := r.read_bool()
+			is_anon := r.read_bool()
+			is_generic := r.read_bool()
+			is_shared := r.read_bool()
+			is_markused := r.read_bool()
+			has_option := r.read_bool()
+			generic_types := r.read_type_array()
+			concrete_types := r.read_type_array()
+			parent_type := r.read_type()
+			name_pos := r.read_pos()
+			return Struct{
+				attrs:          attrs
+				scoped_name:    scoped_name
+				embeds:         embeds
+				fields:         fields
+				is_typedef:     is_typedef
+				is_union:       is_union
+				is_heap:        is_heap
+				is_minify:      is_minify
+				is_anon:        is_anon
+				is_generic:     is_generic
+				is_shared:      is_shared
+				is_markused:    is_markused
+				has_option:     has_option
+				generic_types:  generic_types
+				concrete_types: concrete_types
+				parent_type:    parent_type
+				name_pos:       name_pos
+			}
+		}
+		.sum_type {
+			fields := r.read_struct_field_array()
+			found_fields := r.read_bool()
+			is_anon := r.read_bool()
+			is_generic := r.read_bool()
+			variants := r.read_type_array()
+			generic_types := r.read_type_array()
+			concrete_types := r.read_type_array()
+			parent_type := r.read_type()
+			name_pos := r.read_pos()
+			return SumType{
+				fields:         fields
+				found_fields:   found_fields
+				is_anon:        is_anon
+				is_generic:     is_generic
+				variants:       variants
+				generic_types:  generic_types
+				concrete_types: concrete_types
+				parent_type:    parent_type
+				name_pos:       name_pos
+			}
+		}
+		.thread {
+			return_type := r.read_type()
+			return Thread{
+				return_type: return_type
+			}
+		}
+		.aggregate {
+			fields := r.read_struct_field_array()
+			sum_type := r.read_type()
+			types := r.read_type_array()
+			return Aggregate{
+				fields:   fields
+				sum_type: sum_type
+				types:    types
+			}
+		}
+	}
+}
+
+// --- Fn Serialization ---
+
+fn (mut w AstWriter) write_fn(f Fn) {
+	w.write_bool(f.is_variadic)
+	w.write_bool(f.is_c_variadic)
+	w.write_u8(u8(f.language))
+	w.write_bool(f.is_pub)
+	w.write_bool(f.is_ctor_new)
+	w.write_bool(f.is_deprecated)
+	w.write_bool(f.is_noreturn)
+	w.write_bool(f.is_unsafe)
+	w.write_bool(f.is_must_use)
+	w.write_bool(f.is_placeholder)
+	w.write_bool(f.is_main)
+	w.write_bool(f.is_test)
+	w.write_bool(f.is_keep_alive)
+	w.write_bool(f.is_method)
+	w.write_bool(f.is_static_type_method)
+	w.write_bool(f.no_body)
+	w.write_bool(f.is_file_translated)
+	w.write_string(f.mod)
+	w.write_string(f.file)
+	w.write_u8(u8(f.file_mode))
+	w.write_pos(f.pos)
+	w.write_pos(f.name_pos)
+	w.write_pos(f.return_type_pos)
+	w.write_type(f.return_type)
+	w.write_type(f.receiver_type)
+	w.write_string(f.name)
+	w.write_param_array(f.params)
+	w.write_i32(f.usages)
+	w.write_string_array(f.generic_names)
+	w.write_string_array(f.dep_names)
+	w.write_attr_array(f.attrs)
+	w.write_bool(f.is_conditional)
+	w.write_i32(f.ctdefine_idx)
+	w.write_type(f.from_embedded_type)
+	w.write_bool(f.is_expand_simple_interpolation)
+}
+
+// extract_table_contributions extracts what a file contributes to the table
+// by walking its declarations (structs, enums, functions, etc.)
+pub fn extract_table_contributions(file &File, table &Table) TableContributions {
+	mut tc := TableContributions{}
+
+	for stmt in file.stmts {
+		match stmt {
+			StructDecl {
+				// Get the type symbol for this struct from the table
+				if idx := table.type_idxs[stmt.name] {
+					if ts := table.type_symbols[idx] {
+						tc.type_symbols << *ts
+					}
+				}
+			}
+			EnumDecl {
+				if idx := table.type_idxs[stmt.name] {
+					if ts := table.type_symbols[idx] {
+						tc.type_symbols << *ts
+					}
+				}
+			}
+			InterfaceDecl {
+				if idx := table.type_idxs[stmt.name] {
+					if ts := table.type_symbols[idx] {
+						tc.type_symbols << *ts
+					}
+				}
+			}
+			FnDecl {
+				// Get function from table
+				fkey := stmt.fkey()
+				if f := table.fns[fkey] {
+					tc.functions << f
+				}
+			}
+			TypeDecl {
+				// Type aliases and sumtypes - need full module-qualified name
+				short_name := match stmt {
+					AliasTypeDecl { stmt.name }
+					SumTypeDecl { stmt.name }
+					FnTypeDecl { stmt.name }
+				}
+				mod_name := match stmt {
+					AliasTypeDecl { stmt.mod }
+					SumTypeDecl { stmt.mod }
+					FnTypeDecl { stmt.mod }
+				}
+				// Construct full name: mod.name (unless it's a C type or builtin)
+				full_name := if short_name.starts_with('C.') || mod_name == 'builtin'
+					|| mod_name == '' {
+					short_name
+				} else {
+					'${mod_name}.${short_name}'
+				}
+				if idx := table.type_idxs[full_name] {
+					if ts := table.type_symbols[idx] {
+						tc.type_symbols << *ts
+					}
+				} else if idx := table.type_idxs[short_name] {
+					// Fallback to short name for builtin types
+					if ts := table.type_symbols[idx] {
+						tc.type_symbols << *ts
+					}
+				}
+			}
+			else {}
+		}
+	}
+
+	// Build type_names map from all Type values used in contributions
+	tc.type_names = build_type_names_map(tc, table)
+
+	return tc
+}
+
+// build_type_names_map collects all Type values from contributions and maps them to names
+fn build_type_names_map(tc TableContributions, table &Table) map[int]string {
+	mut type_names := map[int]string{}
+
+	// Collect types from TypeSymbols
+	for ts in tc.type_symbols {
+		// generic_types
+		for gt in ts.generic_types {
+			record_type(gt, table, mut type_names)
+		}
+		// methods return types and params
+		for m in ts.methods {
+			record_type(m.return_type, table, mut type_names)
+			record_type(m.receiver_type, table, mut type_names)
+			record_type(m.from_embedded_type, table, mut type_names)
+			for p in m.params {
+				record_type(p.typ, table, mut type_names)
+			}
+		}
+		// TypeInfo types
+		match ts.info {
+			Alias {
+				record_type(ts.info.parent_type, table, mut type_names)
+			}
+			Array {
+				record_type(ts.info.elem_type, table, mut type_names)
+			}
+			ArrayFixed {
+				record_type(ts.info.elem_type, table, mut type_names)
+			}
+			Chan {
+				record_type(ts.info.elem_type, table, mut type_names)
+			}
+			Enum {
+				record_type(ts.info.typ, table, mut type_names)
+			}
+			FnType {
+				record_type(ts.info.func.return_type, table, mut type_names)
+				record_type(ts.info.func.receiver_type, table, mut type_names)
+				for p in ts.info.func.params {
+					record_type(p.typ, table, mut type_names)
+				}
+			}
+			GenericInst {
+				for ct in ts.info.concrete_types {
+					record_type(ct, table, mut type_names)
+				}
+			}
+			Interface {
+				for t in ts.info.types {
+					record_type(t, table, mut type_names)
+				}
+				for e in ts.info.embeds {
+					record_type(e, table, mut type_names)
+				}
+				for gt in ts.info.generic_types {
+					record_type(gt, table, mut type_names)
+				}
+				for ct in ts.info.concrete_types {
+					record_type(ct, table, mut type_names)
+				}
+				record_type(ts.info.parent_type, table, mut type_names)
+				for fld in ts.info.fields {
+					record_type(fld.typ, table, mut type_names)
+				}
+			}
+			Map {
+				record_type(ts.info.key_type, table, mut type_names)
+				record_type(ts.info.value_type, table, mut type_names)
+			}
+			MultiReturn {
+				for t in ts.info.types {
+					record_type(t, table, mut type_names)
+				}
+			}
+			Struct {
+				for e in ts.info.embeds {
+					record_type(e, table, mut type_names)
+				}
+				for gt in ts.info.generic_types {
+					record_type(gt, table, mut type_names)
+				}
+				for ct in ts.info.concrete_types {
+					record_type(ct, table, mut type_names)
+				}
+				record_type(ts.info.parent_type, table, mut type_names)
+				for fld in ts.info.fields {
+					record_type(fld.typ, table, mut type_names)
+				}
+			}
+			SumType {
+				for v in ts.info.variants {
+					record_type(v, table, mut type_names)
+				}
+				for gt in ts.info.generic_types {
+					record_type(gt, table, mut type_names)
+				}
+				for ct in ts.info.concrete_types {
+					record_type(ct, table, mut type_names)
+				}
+				record_type(ts.info.parent_type, table, mut type_names)
+				for fld in ts.info.fields {
+					record_type(fld.typ, table, mut type_names)
+				}
+			}
+			Thread {
+				record_type(ts.info.return_type, table, mut type_names)
+			}
+			Aggregate {
+				record_type(ts.info.sum_type, table, mut type_names)
+				for t in ts.info.types {
+					record_type(t, table, mut type_names)
+				}
+			}
+			else {}
+		}
+	}
+
+	// Collect types from Functions
+	for f in tc.functions {
+		record_type(f.return_type, table, mut type_names)
+		record_type(f.receiver_type, table, mut type_names)
+		record_type(f.from_embedded_type, table, mut type_names)
+		for p in f.params {
+			record_type(p.typ, table, mut type_names)
+		}
+	}
+
+	return type_names
+}
+
+// record_type adds a type to the type_names map if not already present
+fn record_type(t Type, table &Table, mut type_names map[int]string) {
+	idx := t.idx()
+	if idx <= 0 || idx in type_names {
+		return
+	}
+	if idx >= table.type_symbols.len {
+		return
+	}
+	ts := table.type_symbols[idx] or { return }
+	type_names[idx] = ts.name
+}
+
+fn (mut r AstReader) read_fn() Fn {
+	is_variadic := r.read_bool()
+	is_c_variadic := r.read_bool()
+	language := unsafe { Language(r.read_u8()) }
+	is_pub := r.read_bool()
+	is_ctor_new := r.read_bool()
+	is_deprecated := r.read_bool()
+	is_noreturn := r.read_bool()
+	is_unsafe := r.read_bool()
+	is_must_use := r.read_bool()
+	is_placeholder := r.read_bool()
+	is_main := r.read_bool()
+	is_test := r.read_bool()
+	is_keep_alive := r.read_bool()
+	is_method := r.read_bool()
+	is_static_type_method := r.read_bool()
+	no_body := r.read_bool()
+	is_file_translated := r.read_bool()
+	mod := r.read_string()
+	file := r.read_string()
+	file_mode := unsafe { Language(r.read_u8()) }
+	pos := r.read_pos()
+	name_pos := r.read_pos()
+	return_type_pos := r.read_pos()
+	return_type := r.read_type()
+	receiver_type := r.read_type()
+	name := r.read_string()
+	params := r.read_param_array()
+	usages := r.read_i32()
+	generic_names := r.read_string_array()
+	dep_names := r.read_string_array()
+	attrs := r.read_attr_array()
+	is_conditional := r.read_bool()
+	ctdefine_idx := r.read_i32()
+	from_embedded_type := r.read_type()
+	is_expand_simple_interpolation := r.read_bool()
+	return Fn{
+		is_variadic:                    is_variadic
+		is_c_variadic:                  is_c_variadic
+		language:                       language
+		is_pub:                         is_pub
+		is_ctor_new:                    is_ctor_new
+		is_deprecated:                  is_deprecated
+		is_noreturn:                    is_noreturn
+		is_unsafe:                      is_unsafe
+		is_must_use:                    is_must_use
+		is_placeholder:                 is_placeholder
+		is_main:                        is_main
+		is_test:                        is_test
+		is_keep_alive:                  is_keep_alive
+		is_method:                      is_method
+		is_static_type_method:          is_static_type_method
+		no_body:                        no_body
+		is_file_translated:             is_file_translated
+		mod:                            mod
+		file:                           file
+		file_mode:                      file_mode
+		pos:                            pos
+		name_pos:                       name_pos
+		return_type_pos:                return_type_pos
+		return_type:                    return_type
+		receiver_type:                  receiver_type
+		name:                           name
+		params:                         params
+		usages:                         usages
+		generic_names:                  generic_names
+		dep_names:                      dep_names
+		attrs:                          attrs
+		is_conditional:                 is_conditional
+		ctdefine_idx:                   ctdefine_idx
+		from_embedded_type:             from_embedded_type
+		is_expand_simple_interpolation: is_expand_simple_interpolation
 	}
 }

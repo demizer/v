@@ -102,8 +102,15 @@ pub fn (pc &ParseCache) is_valid_with_hash(source_path string, file_mtime i64, c
 	return false
 }
 
-// load attempts to load a cached AST file
-pub fn (mut pc ParseCache) load(source_path string) ?&ast.File {
+// CachedFile holds both the AST and its table contributions
+pub struct CachedFile {
+pub:
+	file          &ast.File
+	contributions ast.TableContributions
+}
+
+// load attempts to load a cached AST file and its table contributions
+pub fn (mut pc ParseCache) load(source_path string) ?CachedFile {
 	entry := pc.manifest.files[source_path] or {
 		pc.stats.misses++
 		return none
@@ -115,26 +122,50 @@ pub fn (mut pc ParseCache) load(source_path string) ?&ast.File {
 		return none
 	}
 
-	// Deserialize
-	file := ast.deserialize_file(data) or {
+	// Create reader
+	mut r := ast.new_ast_reader(data)
+
+	// Read AST file size and data
+	file_size := r.read_u32()
+	file_data := data[r.pos..r.pos + int(file_size)]
+	r.pos += int(file_size)
+
+	// Deserialize AST
+	file := ast.deserialize_file(file_data) or {
 		pc.stats.misses++
 		return none
 	}
 
+	// Read table contributions
+	contributions := r.read_table_contributions()
+
 	pc.stats.hits++
-	return file
+	return CachedFile{
+		file:          file
+		contributions: contributions
+	}
 }
 
-// save saves a parsed AST file to cache
-pub fn (mut pc ParseCache) save(source_path string, content string, file_mtime i64, file &ast.File) {
+// save saves a parsed AST file and its table contributions to cache
+pub fn (mut pc ParseCache) save(source_path string, content string, file_mtime i64, file &ast.File, contributions &ast.TableContributions) {
 	cache_path := pc.get_cache_path(source_path)
 	content_hash := compute_file_hash(content)
 
-	// Serialize AST
-	data := ast.serialize_file(file)
+	// Serialize AST and contributions together
+	mut w := ast.new_ast_writer(4096)
+
+	// Write AST file
+	file_data := ast.serialize_file(file)
+	w.write_u32(u32(file_data.len))
+	for b in file_data {
+		w.buf << b
+	}
+
+	// Write table contributions
+	w.write_table_contributions(contributions)
 
 	// Write cache file
-	os.write_file_array(cache_path, data) or { return }
+	os.write_file_array(cache_path, w.buf) or { return }
 
 	// Update manifest
 	pc.update_entry(source_path, content_hash, file_mtime, cache_path)
@@ -190,5 +221,338 @@ pub fn (pc &ParseCache) print_stats() {
 	total := pc.stats.hits + pc.stats.misses
 	if total > 0 {
 		println('Parse cache: ${pc.stats.hits} hits, ${pc.stats.misses} misses (${total} files)')
+	}
+}
+
+// register_contributions registers cached table contributions back into the table
+pub fn register_contributions(mut table ast.Table, contributions &ast.TableContributions) {
+	// Debug: print what we're registering
+	if contributions.type_symbols.len > 0 {
+		mut names := []string{}
+		for ts in contributions.type_symbols {
+			names << ts.name
+		}
+		eprintln('DEBUG: contributions has ${contributions.type_symbols.len} type_symbols: ${names[..if names.len > 5 {
+			5
+		} else {
+			names.len
+		}]}')
+		eprintln('DEBUG: type_names map has ${contributions.type_names.len} entries')
+	}
+
+	// Build remap table: old_idx -> new_idx
+	mut remap := map[int]int{}
+	mut unmapped := []string{}
+	for old_idx, type_name in contributions.type_names {
+		// Look up the type name in the current table
+		if new_idx := table.type_idxs[type_name] {
+			remap[old_idx] = new_idx
+		} else {
+			unmapped << '${old_idx}:${type_name}'
+		}
+	}
+	if unmapped.len > 0 {
+		eprintln('DEBUG: unmapped types: ${unmapped[..if unmapped.len > 10 {
+			10
+		} else {
+			unmapped.len
+		}]}')
+	}
+	eprintln('DEBUG: remap built with ${remap.len} entries, table has ${table.type_symbols.len} types')
+
+	// Register type symbols with remapped types
+	for ts in contributions.type_symbols {
+		// Check if already registered by name
+		if ts.name in table.type_idxs {
+			eprintln('DEBUG: skipping already registered: ${ts.name}')
+			continue
+		}
+		// Remap types in the TypeSymbol and register
+		remapped_ts := remap_type_symbol(ts, remap)
+		eprintln('DEBUG: registering type: ${ts.name} kind=${ts.kind}')
+		table.register_sym(remapped_ts)
+	}
+
+	// Register functions with remapped types
+	for f in contributions.functions {
+		remapped_f := remap_fn(f, remap)
+		fkey := if remapped_f.is_method {
+			'${int(remapped_f.receiver_type)}.${remapped_f.name}'
+		} else {
+			'${remapped_f.mod}.${remapped_f.name}'
+		}
+		// Check if already registered
+		if fkey in table.fns {
+			continue
+		}
+		table.fns[fkey] = remapped_f
+	}
+}
+
+// remap_type remaps a Type index using the remap table
+fn remap_type(t ast.Type, remap map[int]int) ast.Type {
+	idx := t.idx()
+	if idx <= 0 {
+		return t
+	}
+	if new_idx := remap[idx] {
+		// Preserve type flags (ptr, optional, etc) using derive
+		return ast.new_type(new_idx).derive(t)
+	}
+	return t
+}
+
+// remap_type_array remaps an array of types
+fn remap_type_array(types []ast.Type, remap map[int]int) []ast.Type {
+	mut result := []ast.Type{cap: types.len}
+	for t in types {
+		result << remap_type(t, remap)
+	}
+	return result
+}
+
+// remap_type_symbol remaps all Type values in a TypeSymbol
+fn remap_type_symbol(ts ast.TypeSymbol, remap map[int]int) ast.TypeSymbol {
+	return ast.TypeSymbol{
+		parent_idx:    ts.parent_idx
+		kind:          ts.kind
+		name:          ts.name
+		cname:         ts.cname
+		rname:         ts.rname
+		ngname:        ts.ngname
+		mod:           ts.mod
+		is_pub:        ts.is_pub
+		is_builtin:    ts.is_builtin
+		language:      ts.language
+		idx:           ts.idx
+		size:          ts.size
+		align:         ts.align
+		generic_types: remap_type_array(ts.generic_types, remap)
+		methods:       remap_fn_array(ts.methods, remap)
+		info:          remap_type_info(ts.info, remap)
+	}
+}
+
+// remap_fn remaps all Type values in a Fn
+fn remap_fn(f ast.Fn, remap map[int]int) ast.Fn {
+	return ast.Fn{
+		is_variadic:                    f.is_variadic
+		is_c_variadic:                  f.is_c_variadic
+		language:                       f.language
+		is_pub:                         f.is_pub
+		is_ctor_new:                    f.is_ctor_new
+		is_deprecated:                  f.is_deprecated
+		is_noreturn:                    f.is_noreturn
+		is_unsafe:                      f.is_unsafe
+		is_must_use:                    f.is_must_use
+		is_placeholder:                 f.is_placeholder
+		is_main:                        f.is_main
+		is_test:                        f.is_test
+		is_keep_alive:                  f.is_keep_alive
+		is_method:                      f.is_method
+		is_static_type_method:          f.is_static_type_method
+		no_body:                        f.no_body
+		is_file_translated:             f.is_file_translated
+		mod:                            f.mod
+		file:                           f.file
+		file_mode:                      f.file_mode
+		pos:                            f.pos
+		name_pos:                       f.name_pos
+		return_type_pos:                f.return_type_pos
+		return_type:                    remap_type(f.return_type, remap)
+		receiver_type:                  remap_type(f.receiver_type, remap)
+		name:                           f.name
+		params:                         remap_params(f.params, remap)
+		usages:                         f.usages
+		generic_names:                  f.generic_names
+		dep_names:                      f.dep_names
+		attrs:                          f.attrs
+		is_conditional:                 f.is_conditional
+		ctdefine_idx:                   f.ctdefine_idx
+		from_embedded_type:             remap_type(f.from_embedded_type, remap)
+		is_expand_simple_interpolation: f.is_expand_simple_interpolation
+	}
+}
+
+// remap_fn_array remaps an array of Fns
+fn remap_fn_array(fns []ast.Fn, remap map[int]int) []ast.Fn {
+	mut result := []ast.Fn{cap: fns.len}
+	for f in fns {
+		result << remap_fn(f, remap)
+	}
+	return result
+}
+
+// remap_params remaps types in function parameters
+fn remap_params(params []ast.Param, remap map[int]int) []ast.Param {
+	mut result := []ast.Param{cap: params.len}
+	for p in params {
+		result << ast.Param{
+			pos:        p.pos
+			name:       p.name
+			is_mut:     p.is_mut
+			is_shared:  p.is_shared
+			is_atomic:  p.is_atomic
+			type_pos:   p.type_pos
+			is_hidden:  p.is_hidden
+			on_newline: p.on_newline
+			typ:        remap_type(p.typ, remap)
+		}
+	}
+	return result
+}
+
+// remap_struct_fields remaps types in struct fields
+fn remap_struct_fields(fields []ast.StructField, remap map[int]int) []ast.StructField {
+	mut result := []ast.StructField{cap: fields.len}
+	for fld in fields {
+		result << ast.StructField{
+			pos:              fld.pos
+			name:             fld.name
+			typ:              remap_type(fld.typ, remap)
+			default_expr:     fld.default_expr
+			has_default_expr: fld.has_default_expr
+			default_val:      fld.default_val
+			attrs:            fld.attrs
+			is_pub:           fld.is_pub
+			is_mut:           fld.is_mut
+			is_global:        fld.is_global
+			is_volatile:      fld.is_volatile
+			is_deprecated:    fld.is_deprecated
+			anon_struct_decl: fld.anon_struct_decl
+			comments:         fld.comments
+			i:                fld.i
+		}
+	}
+	return result
+}
+
+// remap_type_info remaps Type values in TypeInfo
+fn remap_type_info(info ast.TypeInfo, remap map[int]int) ast.TypeInfo {
+	match info {
+		ast.Alias {
+			return ast.Alias{
+				parent_type: remap_type(info.parent_type, remap)
+				language:    info.language
+				is_import:   info.is_import
+				name_pos:    info.name_pos
+			}
+		}
+		ast.Array {
+			return ast.Array{
+				nr_dims:   info.nr_dims
+				elem_type: remap_type(info.elem_type, remap)
+			}
+		}
+		ast.ArrayFixed {
+			return ast.ArrayFixed{
+				size:      info.size
+				elem_type: remap_type(info.elem_type, remap)
+				is_fn_ret: info.is_fn_ret
+			}
+		}
+		ast.Chan {
+			return ast.Chan{
+				elem_type: remap_type(info.elem_type, remap)
+				is_mut:    info.is_mut
+			}
+		}
+		ast.Enum {
+			return ast.Enum{
+				vals:             info.vals
+				is_flag:          info.is_flag
+				is_multi_allowed: info.is_multi_allowed
+				uses_exprs:       info.uses_exprs
+				typ:              remap_type(info.typ, remap)
+				name_pos:         info.name_pos
+			}
+		}
+		ast.FnType {
+			return ast.FnType{
+				is_anon:  info.is_anon
+				has_decl: info.has_decl
+				func:     remap_fn(info.func, remap)
+			}
+		}
+		ast.GenericInst {
+			return ast.GenericInst{
+				parent_idx:     info.parent_idx
+				concrete_types: remap_type_array(info.concrete_types, remap)
+			}
+		}
+		ast.Interface {
+			return ast.Interface{
+				types:          remap_type_array(info.types, remap)
+				fields:         remap_struct_fields(info.fields, remap)
+				methods:        remap_fn_array(info.methods, remap)
+				embeds:         remap_type_array(info.embeds, remap)
+				is_generic:     info.is_generic
+				is_markused:    info.is_markused
+				generic_types:  remap_type_array(info.generic_types, remap)
+				concrete_types: remap_type_array(info.concrete_types, remap)
+				parent_type:    remap_type(info.parent_type, remap)
+				name_pos:       info.name_pos
+			}
+		}
+		ast.Map {
+			return ast.Map{
+				key_type:   remap_type(info.key_type, remap)
+				value_type: remap_type(info.value_type, remap)
+				name_pos:   info.name_pos
+			}
+		}
+		ast.MultiReturn {
+			return ast.MultiReturn{
+				types: remap_type_array(info.types, remap)
+			}
+		}
+		ast.Struct {
+			return ast.Struct{
+				attrs:          info.attrs
+				scoped_name:    info.scoped_name
+				embeds:         remap_type_array(info.embeds, remap)
+				fields:         remap_struct_fields(info.fields, remap)
+				is_typedef:     info.is_typedef
+				is_union:       info.is_union
+				is_heap:        info.is_heap
+				is_minify:      info.is_minify
+				is_anon:        info.is_anon
+				is_generic:     info.is_generic
+				is_shared:      info.is_shared
+				is_markused:    info.is_markused
+				has_option:     info.has_option
+				generic_types:  remap_type_array(info.generic_types, remap)
+				concrete_types: remap_type_array(info.concrete_types, remap)
+				parent_type:    remap_type(info.parent_type, remap)
+				name_pos:       info.name_pos
+			}
+		}
+		ast.SumType {
+			return ast.SumType{
+				fields:         remap_struct_fields(info.fields, remap)
+				found_fields:   info.found_fields
+				is_anon:        info.is_anon
+				is_generic:     info.is_generic
+				variants:       remap_type_array(info.variants, remap)
+				generic_types:  remap_type_array(info.generic_types, remap)
+				concrete_types: remap_type_array(info.concrete_types, remap)
+				parent_type:    remap_type(info.parent_type, remap)
+				name_pos:       info.name_pos
+			}
+		}
+		ast.Thread {
+			return ast.Thread{
+				return_type: remap_type(info.return_type, remap)
+			}
+		}
+		ast.Aggregate {
+			return ast.Aggregate{
+				sum_type: remap_type(info.sum_type, remap)
+				types:    remap_type_array(info.types, remap)
+			}
+		}
+		else {
+			return info
+		}
 	}
 }

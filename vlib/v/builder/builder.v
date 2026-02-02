@@ -241,12 +241,14 @@ fn (mut b Builder) parse_file_with_cache(path string) &ast.File {
 	// Check if cache is valid using quick mtime check
 	if b.parse_cache.is_valid(path, mtime) {
 		// Try to load from cache
-		if cached_file := b.parse_cache.load(path) {
+		if cached := b.parse_cache.load(path) {
 			// Register file in table (parser normally does this)
 			if b.table.filelist.index(path) == -1 {
 				b.table.filelist << path
 			}
-			return cached_file
+			// Register table contributions from cache
+			register_contributions(mut b.table, &cached.contributions)
+			return cached.file
 		}
 	}
 
@@ -256,22 +258,25 @@ fn (mut b Builder) parse_file_with_cache(path string) &ast.File {
 
 	// Check if content hash matches (mtime changed but content same)
 	if b.parse_cache.is_valid_with_hash(path, mtime, content) {
-		if cached_file := b.parse_cache.load(path) {
+		if cached := b.parse_cache.load(path) {
 			// Update mtime in manifest since content is same
 			b.parse_cache.update_entry(path, compute_file_hash(content), mtime, b.parse_cache.get_cache_path(path))
 			// Register file in table
 			if b.table.filelist.index(path) == -1 {
 				b.table.filelist << path
 			}
-			return cached_file
+			// Register table contributions from cache
+			register_contributions(mut b.table, &cached.contributions)
+			return cached.file
 		}
 	}
 
 	// Parse the file normally
 	file := parser.parse_file(path, mut b.table, .skip_comments, b.pref)
 
-	// Save to cache
-	b.parse_cache.save(path, content, mtime, file)
+	// Extract and save table contributions
+	contributions := ast.extract_table_contributions(file, b.table)
+	b.parse_cache.save(path, content, mtime, file, &contributions)
 
 	return file
 }
@@ -416,7 +421,7 @@ pub fn (mut b Builder) parse_imports() {
 			}
 			// eprintln('>> ast_file.path: ${ast_file.path} , done: ${done_imports}, `import ${mod}` => ${v_files}')
 			// Add all imports referenced by these libs
-			parsed_files := parser.parse_files(v_files, mut b.table, b.pref)
+			parsed_files := b.parse_files_with_cache(v_files)
 			for file in parsed_files {
 				mut name := file.mod.name
 				if name == '' {
