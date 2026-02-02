@@ -24,7 +24,7 @@ fn (mut p Parser) handle_codegen_for_file() {
 	codegen_files << parse_text(ptext, p.file_path, mut p.table, p.scanner.comments_mode, p.pref)
 }
 
-fn handle_codegen_for_multiple_files(mut files []&ast.File) {
+pub fn handle_codegen_for_multiple_files(mut files []&ast.File) {
 	if codegen_files.len == 0 {
 		return
 	}

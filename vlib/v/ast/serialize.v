@@ -7,7 +7,7 @@ import v.token
 
 // Magic bytes for cache file identification
 const cache_magic = [u8(`V`), `A`, `S`, `T`]
-const cache_version = u32(1)
+const cache_version = u32(5)
 
 // ExprKind discriminator for Expr sumtype variants
 pub enum ExprKind as u8 {
@@ -252,13 +252,19 @@ fn (mut w AstWriter) write_pos(pos token.Pos) {
 
 // read_pos reads a token.Pos
 fn (mut r AstReader) read_pos() token.Pos {
+	len := r.read_i32()
+	line_nr := r.read_i32()
+	pos := r.read_i32()
+	col := r.read_u16()
+	file_idx := i16(r.read_i32())
+	last_line := r.read_i32()
 	return token.Pos{
-		len:       r.read_i32()
-		line_nr:   r.read_i32()
-		pos:       r.read_i32()
-		col:       r.read_u16()
-		file_idx:  i16(r.read_i32())
-		last_line: r.read_i32()
+		len:       len
+		line_nr:   line_nr
+		pos:       pos
+		col:       col
+		file_idx:  file_idx
+		last_line: last_line
 	}
 }
 
@@ -1291,66 +1297,90 @@ fn (mut r AstReader) read_stmt() Stmt {
 			}
 		}
 		.node_error {
+			idx := int(r.read_i32())
+			pos := r.read_pos()
 			return NodeError{
-				idx: int(r.read_i32())
-				pos: r.read_pos()
+				idx: idx
+				pos: pos
 			}
 		}
 		.goto_label {
+			name := r.read_string()
+			pos := r.read_pos()
 			return GotoLabel{
-				name: r.read_string()
-				pos:  r.read_pos()
+				name: name
+				pos:  pos
 			}
 		}
 		.goto_stmt {
+			name := r.read_string()
+			pos := r.read_pos()
 			return GotoStmt{
-				name: r.read_string()
-				pos:  r.read_pos()
+				name: name
+				pos:  pos
 			}
 		}
 		.debugger_stmt {
+			pos := r.read_pos()
 			return DebuggerStmt{
-				pos: r.read_pos()
+				pos: pos
 			}
 		}
 		.branch_stmt {
+			branch_kind := unsafe { token.Kind(r.read_u8()) }
+			label := r.read_string()
+			pos := r.read_pos()
 			return BranchStmt{
-				kind:  unsafe { token.Kind(r.read_u8()) }
-				label: r.read_string()
+				kind:  branch_kind
+				label: label
 				scope: unsafe { nil }
-				pos:   r.read_pos()
+				pos:   pos
 			}
 		}
 		.expr_stmt {
+			pos := r.read_pos()
+			comments := r.read_comment_array()
+			expr := r.read_expr()
+			is_expr := r.read_bool()
 			return ExprStmt{
-				pos:      r.read_pos()
-				comments: r.read_comment_array()
-				expr:     r.read_expr()
-				is_expr:  r.read_bool()
+				pos:      pos
+				comments: comments
+				expr:     expr
+				is_expr:  is_expr
 			}
 		}
 		.return_stmt {
+			pos := r.read_pos()
+			comments := r.read_comment_array()
+			exprs := r.read_expr_array()
 			return Return{
 				scope:    unsafe { nil }
-				pos:      r.read_pos()
-				comments: r.read_comment_array()
-				exprs:    r.read_expr_array()
+				pos:      pos
+				comments: comments
+				exprs:    exprs
 			}
 		}
 		.assert_stmt {
+			pos := r.read_pos()
+			extra_pos := r.read_pos()
+			expr := r.read_expr()
+			extra := r.read_expr()
 			return AssertStmt{
-				pos:       r.read_pos()
-				extra_pos: r.read_pos()
-				expr:      r.read_expr()
-				extra:     r.read_expr()
+				pos:       pos
+				extra_pos: extra_pos
+				expr:      expr
+				extra:     extra
 			}
 		}
 		.block {
+			is_unsafe := r.read_bool()
+			pos := r.read_pos()
+			stmts := r.read_stmt_array()
 			return Block{
-				is_unsafe: r.read_bool()
-				pos:       r.read_pos()
+				is_unsafe: is_unsafe
+				pos:       pos
 				scope:     unsafe { nil }
-				stmts:     r.read_stmt_array()
+				stmts:     stmts
 			}
 		}
 		.defer_stmt {
@@ -1934,13 +1964,19 @@ fn (mut w AstWriter) write_asm_stmt(a AsmStmt) {
 }
 
 fn (mut r AstReader) read_asm_stmt() AsmStmt {
+	is_basic := r.read_bool()
+	is_volatile := r.read_bool()
+	is_goto := r.read_bool()
+	pos := r.read_pos()
+	global_labels := r.read_string_array()
+	local_labels := r.read_string_array()
 	return AsmStmt{
-		is_basic:      r.read_bool()
-		is_volatile:   r.read_bool()
-		is_goto:       r.read_bool()
-		pos:           r.read_pos()
-		global_labels: r.read_string_array()
-		local_labels:  r.read_string_array()
+		is_basic:      is_basic
+		is_volatile:   is_volatile
+		is_goto:       is_goto
+		pos:           pos
+		global_labels: global_labels
+		local_labels:  local_labels
 	}
 }
 
@@ -1953,9 +1989,11 @@ fn (mut w AstWriter) write_sql_stmt(s SqlStmt) {
 }
 
 fn (mut r AstReader) read_sql_stmt() SqlStmt {
+	pos := r.read_pos()
+	db_expr := r.read_expr()
 	return SqlStmt{
-		pos:     r.read_pos()
-		db_expr: r.read_expr()
+		pos:     pos
+		db_expr: db_expr
 	}
 }
 
@@ -3248,6 +3286,10 @@ pub fn serialize_file(file &File) []u8 {
 	}
 	w.write_u32(cache_version)
 
+	// Write file path info
+	w.write_string(file.path)
+	w.write_string(file.path_base)
+
 	// Write file metadata
 	w.write_i32(file.nr_lines)
 	w.write_i32(file.nr_bytes)
@@ -3299,6 +3341,10 @@ pub fn deserialize_file(data []u8) !&File {
 		return error('cache version mismatch: expected ${cache_version}, got ${version}')
 	}
 
+	// Read file path info
+	path := r.read_string()
+	path_base := r.read_string()
+
 	// Read file metadata
 	nr_lines := r.read_i32()
 	nr_bytes := r.read_i32()
@@ -3336,6 +3382,8 @@ pub fn deserialize_file(data []u8) !&File {
 	}
 
 	return &File{
+		path:           path
+		path_base:      path_base
 		nr_lines:       nr_lines
 		nr_bytes:       nr_bytes
 		nr_tokens:      nr_tokens

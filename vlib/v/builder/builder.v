@@ -35,6 +35,7 @@ pub mut:
 	transformer         &transformer.Transformer = unsafe { nil }
 	comptime            &comptime.Comptime       = unsafe { nil }
 	generics            &generics.Generics       = unsafe { nil }
+	parse_cache         &ParseCache              = unsafe { nil }
 	out_name_c          string
 	out_name_js         string
 	stats_lines         int // size of backend generated source code in lines
@@ -106,6 +107,15 @@ pub fn new_builder(pref_ &pref.Preferences) Builder {
 	$if windows {
 		executable_name += '.exe'
 	}
+	// Initialize parse cache if local cache is enabled
+	mut pc := &ParseCache{
+		enabled: false
+	}
+	if pref_.use_local_cache {
+		cache_dir := os.join_path(compiled_dir, '.vcache')
+		vhash := @VHASH
+		pc = new_parse_cache(cache_dir, vhash)
+	}
 	return Builder{
 		pref:              pref_
 		table:             table
@@ -113,6 +123,7 @@ pub fn new_builder(pref_ &pref.Preferences) Builder {
 		transformer:       transformer.new_transformer_with_table(table, pref_)
 		comptime:          comptime.new_comptime_with_table(table, pref_)
 		generics:          generics.new_generics_with_table(table, pref_)
+		parse_cache:       pc
 		compiled_dir:      compiled_dir
 		cached_msvc:       msvc
 		executable_exists: os.is_file(executable_name)
@@ -174,7 +185,7 @@ pub fn (mut b Builder) front_stages(v_files []string) ! {
 	util.timing_start('PARSE')
 
 	util.timing_start('Builder.front_stages.parse_files')
-	b.parsed_files = parser.parse_files(v_files, mut b.table, b.pref)
+	b.parsed_files = b.parse_files_with_cache(v_files)
 	timers.show('Builder.front_stages.parse_files')
 	if b.should_stop_after_frontend_error() && b.has_frontend_errors() {
 		exit(1)
@@ -187,12 +198,82 @@ pub fn (mut b Builder) front_stages(v_files []string) ! {
 		exit(1)
 	}
 
+	// Show parse cache stats and save manifest if enabled
+	if b.parse_cache != unsafe { nil } {
+		b.parse_cache.print_stats()
+		b.parse_cache.save_manifest()
+	}
+
 	timers.show('SCAN')
 	timers.show('PARSE')
 	timers.show_if_exists('PARSE stmt')
 	if b.pref.only_check_syntax {
 		return error_with_code('stop_after_parser', 7001)
 	}
+}
+
+// parse_files_with_cache parses files using the parse cache if enabled
+fn (mut b Builder) parse_files_with_cache(paths []string) []&ast.File {
+	// If cache not enabled, use normal parsing
+	if !b.parse_cache.enabled {
+		return parser.parse_files(paths, mut b.table, b.pref)
+	}
+
+	mut files := []&ast.File{cap: paths.len}
+	for path in paths {
+		file := b.parse_file_with_cache(path)
+		files << file
+	}
+	// Handle any codegen files that were generated during parsing
+	parser.handle_codegen_for_multiple_files(mut files)
+	return files
+}
+
+// parse_file_with_cache parses a single file using the cache if valid
+fn (mut b Builder) parse_file_with_cache(path string) &ast.File {
+	// Get file info for mtime
+	file_info := os.stat(path) or {
+		// File doesn't exist or can't stat, fall back to normal parsing
+		return parser.parse_file(path, mut b.table, .skip_comments, b.pref)
+	}
+	mtime := file_info.mtime
+
+	// Check if cache is valid using quick mtime check
+	if b.parse_cache.is_valid(path, mtime) {
+		// Try to load from cache
+		if cached_file := b.parse_cache.load(path) {
+			// Register file in table (parser normally does this)
+			if b.table.filelist.index(path) == -1 {
+				b.table.filelist << path
+			}
+			return cached_file
+		}
+	}
+
+	// Cache miss - need to parse
+	// Read file content for hash computation
+	content := os.read_file(path) or { '' }
+
+	// Check if content hash matches (mtime changed but content same)
+	if b.parse_cache.is_valid_with_hash(path, mtime, content) {
+		if cached_file := b.parse_cache.load(path) {
+			// Update mtime in manifest since content is same
+			b.parse_cache.update_entry(path, compute_file_hash(content), mtime, b.parse_cache.get_cache_path(path))
+			// Register file in table
+			if b.table.filelist.index(path) == -1 {
+				b.table.filelist << path
+			}
+			return cached_file
+		}
+	}
+
+	// Parse the file normally
+	file := parser.parse_file(path, mut b.table, .skip_comments, b.pref)
+
+	// Save to cache
+	b.parse_cache.save(path, content, mtime, file)
+
+	return file
 }
 
 pub fn (mut b Builder) middle_stages() ! {

@@ -39,9 +39,9 @@ pub mut:
 }
 
 // new_parse_cache creates a new ParseCache instance
-pub fn new_parse_cache(cache_dir string, vhash string) ParseCache {
+pub fn new_parse_cache(cache_dir string, vhash string) &ParseCache {
 	parse_dir := os.join_path(cache_dir, 'parse')
-	mut pc := ParseCache{
+	mut pc := &ParseCache{
 		cache_dir: parse_dir
 		vhash:     vhash
 		enabled:   true
