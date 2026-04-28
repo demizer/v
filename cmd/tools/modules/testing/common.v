@@ -368,6 +368,16 @@ fn windows_disabled_fasthttp_veb_tests(vroot string) []string {
 
 fn (mut ts TestSession) handle_test_runner_option() {
 	test_runner := cmdline.option(os.args, '-test-runner', 'normal')
+	is_path := test_runner.contains('/') || test_runner.contains('\\')
+		|| test_runner.ends_with('.v')
+	if is_path {
+		// Path-based custom runner: the prelude file is loaded by
+		// vlib/v/builder/compile.v (which already accepts paths). The
+		// reporter side stays at the default (silent) so the custom
+		// runner's stderr signal isn't interleaved with V test session
+		// output. Skip the supported-name + output_<name>.v checks.
+		return
+	}
 	if test_runner !in pref.supported_test_runners {
 		eprintln('v test: `-test-runner ${test_runner}` is not using one of the supported test runners: ${pref.supported_test_runners_list()}')
 	}
