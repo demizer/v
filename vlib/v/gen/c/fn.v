@@ -101,7 +101,28 @@ const vinix_c_linker_symbol_names = [
 
 const c_compiler_builtin_decl_names = [
 	'__builtin_return_address',
+	// `cpu_relax()` is a `#define` in thirdparty/stdatomic/nix/atomic.h
+	// (expands to `__asm__ __volatile__("pause")` etc per arch) — emitting
+	// `extern void cpu_relax();` mangles after macro substitution.
+	'cpu_relax',
+	// `wyhash` / `wyhash64` are provided as `static inline` from
+	// thirdparty/wyhash inlined into builtin's preamble — V's extern decl
+	// duplicates them. Same pattern as atomic_*.
+	'wyhash',
+	'wyhash64',
 ]
+
+// c_decl_name_has_provider_prefix returns true when `c_sym_name` is provided
+// by either a compiler intrinsic or the V stdatomic header shim. In both
+// cases the symbol either lives only inside the compiler (no extern needed)
+// or is defined as `static inline` / `#define` in
+// `thirdparty/stdatomic/nix/atomic.h`, so emitting a V `extern` declaration
+// just creates conflicting prototypes (gcc 16 strict-rejects, TCC errors on
+// macro substitution, clang notes the builtin's true type).
+@[inline]
+fn c_decl_name_has_provider_prefix(c_sym_name string) bool {
+	return c_sym_name.starts_with('__builtin_') || c_sym_name.starts_with('atomic_')
+}
 
 fn collect_function_defer_stmts(node &ast.FnDecl) []ast.DeferStmt {
 	mut defer_stmts := []ast.DeferStmt{cap: node.defer_stmts.len}
@@ -875,6 +896,9 @@ fn (g &Gen) c_prelude_provides_decl(c_sym_name string) bool {
 fn (g &Gen) should_emit_c_fallback_decl(node ast.FnDecl) bool {
 	c_sym_name := node.name.all_after_first('C__').all_after_first('C.')
 	if c_sym_name in c_compiler_builtin_decl_names {
+		return false
+	}
+	if c_decl_name_has_provider_prefix(c_sym_name) {
 		return false
 	}
 	if g.pref.os == .vinix && c_sym_name in vinix_c_linker_symbol_names {

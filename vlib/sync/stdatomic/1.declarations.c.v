@@ -67,14 +67,20 @@ $if linux {
 	}
 }
 
-// The following functions are actually generic in C
-fn C.atomic_load_ptr(voidptr) voidptr
-fn C.atomic_store_ptr(voidptr, voidptr)
-fn C.atomic_compare_exchange_weak_ptr(voidptr, voidptr, isize) bool
-fn C.atomic_compare_exchange_strong_ptr(voidptr, voidptr, isize) bool
-fn C.atomic_exchange_ptr(voidptr, voidptr) voidptr
-fn C.atomic_fetch_add_ptr(voidptr, voidptr) voidptr
-fn C.atomic_fetch_sub_ptr(voidptr, voidptr) voidptr
+// The following functions are actually generic in C.
+// First arg is `void**` per atomic.h's static-inline definitions
+// (thirdparty/stdatomic/nix/atomic.h:750 gcc/clang branch); using
+// `voidptr` here generated `extern void* atomic_load_ptr(void*)`,
+// which gcc 16 strict-rejects vs `void* atomic_load_ptr(void**)`.
+// Callers in vlib/sync/channels.c.v already pass `&voidptr(...)`,
+// so the corrected `&voidptr` matches both sides.
+fn C.atomic_load_ptr(&voidptr) voidptr
+fn C.atomic_store_ptr(&voidptr, voidptr)
+fn C.atomic_compare_exchange_weak_ptr(&voidptr, &voidptr, isize) bool
+fn C.atomic_compare_exchange_strong_ptr(&voidptr, &voidptr, isize) bool
+fn C.atomic_exchange_ptr(&voidptr, voidptr) voidptr
+fn C.atomic_fetch_add_ptr(&voidptr, voidptr) voidptr
+fn C.atomic_fetch_sub_ptr(&voidptr, voidptr) voidptr
 
 fn C.atomic_load_byte(voidptr) u8
 fn C.atomic_store_byte(voidptr, u8)
