@@ -361,8 +361,8 @@ fn try_register_type_by_name(mut table Table, name string) int {
 			elem_name := name[bracket_end + 1..]
 			elem_idx := resolve_type_name(mut table, elem_name)
 			if elem_idx > 0 {
-				arr_idx := table.find_or_register_array_fixed(new_type(elem_idx), size,
-					empty_expr, false)
+				arr_idx := table.find_or_register_array_fixed(new_type(elem_idx), size, empty_expr,
+					false)
 				return arr_idx
 			}
 		}
@@ -2815,6 +2815,9 @@ fn (mut w AstWriter) write_expr(expr Expr) {
 		CTempVar {
 			w.write_u8(u8(ExprKind.c_temp_var))
 		}
+		SqlQueryDataExpr {
+			w.write_u8(u8(ExprKind.empty_expr))
+		}
 	}
 }
 
@@ -3766,7 +3769,7 @@ mut:
 // rebuild_scopes reconstructs the scope tree for a deserialized file
 pub fn rebuild_scopes(mut file File, mut global_scope Scope) {
 	// Create file-level scope
-	file_scope := &Scope{
+	mut file_scope := &Scope{
 		parent:    global_scope
 		start_pos: 0
 		end_pos:   file.nr_bytes
@@ -4277,6 +4280,9 @@ fn (mut b ScopeBuilder) walk_expr(mut expr Expr) {
 		}
 		Comment {
 			// Comment
+		}
+		SqlQueryDataExpr {
+			// No scope walk needed
 		}
 	}
 }
@@ -4961,11 +4967,13 @@ pub fn extract_table_contributions(file &File, table &Table) TableContributions 
 					SumTypeDecl { stmt.name }
 					FnTypeDecl { stmt.name }
 				}
+
 				mod_name := match stmt {
 					AliasTypeDecl { stmt.mod }
 					SumTypeDecl { stmt.mod }
 					FnTypeDecl { stmt.mod }
 				}
+
 				// Construct full name: mod.name (unless it's a C type or builtin)
 				full_name := if short_name.starts_with('C.') || mod_name == 'builtin'
 					|| mod_name == '' {

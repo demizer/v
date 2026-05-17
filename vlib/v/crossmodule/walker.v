@@ -6,8 +6,8 @@ module crossmodule
 import v.ast
 
 struct Walker {
+	table &ast.Table
 mut:
-	table   &ast.Table
 	result  &ast.CrossModuleInfo
 	cur_mod string // current module being walked
 }
