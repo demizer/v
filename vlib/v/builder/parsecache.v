@@ -319,7 +319,7 @@ pub fn register_contributions(mut table ast.Table, contributions &ast.TableContr
 	eprintln('> register_contributions: types registered')
 
 	// Register functions with remapped types
-	for i, f in contributions.functions {
+	for f in contributions.functions {
 		remapped_f := remap_fn(f, remap)
 		fkey := if remapped_f.is_method {
 			'${int(remapped_f.receiver_type)}.${remapped_f.name}'

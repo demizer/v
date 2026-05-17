@@ -24,7 +24,7 @@ mut:
 // should_cover_file checks if a file should be included in coverage tracking.
 // All files are always instrumented for coverage. The -cov flag only controls
 // what appears in the final report (holistic view), not what gets instrumented.
-fn (g &Gen) should_cover_file(filepath string) bool {
+fn (g &Gen) should_cover_file(_ string) bool {
 	// Always instrument all files - filtering is done at report time
 	return true
 }
@@ -80,7 +80,8 @@ fn (mut g Gen) write_coverage_stats() {
 			os.rm(csv_file) or {}
 		}
 	}
-	counter_ulid := rand.ulid() // rand.ulid provides a hash+timestamp, so that a collision is extremely unlikely
+	counter_ulid :=
+		rand.ulid() // rand.ulid provides a hash+timestamp, so that a collision is extremely unlikely
 	g.cov_declarations.writeln('')
 	g.cov_declarations.writeln('void vprint_coverage_stats() {')
 	g.cov_declarations.writeln('\tchar cov_filename[2048];')

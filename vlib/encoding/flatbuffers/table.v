@@ -294,7 +294,7 @@ pub fn get_root_as(buf []u8) Table {
 pub fn get_size_prefixed_root_as(buf []u8) Table {
 	n := get_u_offset_t(buf[size_u32..])
 	return Table{
-		bytes: buf[size_u32..]
+		bytes: unsafe { buf[size_u32..] }
 		pos:   n
 	}
 }
